@@ -156,6 +156,7 @@ main { width: min(var(--max), calc(100% - 48px)); margin: 0 auto; padding-bottom
 .schedule-timeline .timeline-performance.clash::after { content: "! CLASH"; position: absolute; right: 5px; bottom: 4px; padding: 2px 4px; color: #130808; background: var(--red); font-size: .47rem; font-weight: 950; letter-spacing: .04em; }
 .schedule-timeline .timeline-performance.performance--compact .attendance-label { display: none; }
 .schedule-timeline .timeline-performance.performance--compact .attendance { margin-top: 1px; }
+.schedule-timeline .timeline-performance.attendee-names-expanded { z-index: 10; overflow: visible; }
 .schedule-timeline .timeline-performance.notification-target { z-index: 9; animation: notification-focus 1s ease-in-out 4; box-shadow: 0 0 0 3px var(--green), 0 0 28px rgba(112,214,167,.56); }
 @keyframes notification-focus { 50% { box-shadow: 0 0 0 4px var(--green), 0 0 32px rgba(112,214,167,.68); } }
 .stage-column { min-width: 240px; background: rgba(16,16,18,.86); border: 1px solid var(--line); }
@@ -178,6 +179,9 @@ main { width: min(var(--max), calc(100% - 48px)); margin: 0 auto; padding-bottom
 .attendance { min-height: 24px; display: flex; align-items: center; gap: 7px; }
 .attendance-avatars { display: flex; flex-direction: row-reverse; justify-content: flex-end; padding-left: 4px; }
 .attendance-avatars .avatar { margin-left: -5px; }
+.attendance-avatars--expandable { align-items: center; flex: 0 0 auto; padding: 0 0 0 4px; background: transparent; border: 0; }
+.attendance-avatars--expandable:focus-visible { outline: 2px solid var(--acid); outline-offset: 2px; border-radius: 999px; }
+.attendance-names-popover { position: absolute; top: calc(100% - 2px); left: 8px; z-index: 12; width: max-content; max-width: calc(100% - 16px); padding: 7px 9px; color: var(--paper); background: #202024; border: 1px solid #45454c; box-shadow: 0 7px 18px rgba(0,0,0,.46); font-size: .62rem; font-weight: 800; line-height: 1.35; white-space: normal; }
 .attendance-label { color: var(--muted); font-size: .61rem; font-weight: 700; }
 .attendance-label strong { color: var(--green); }
 .clash-label { display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; color: var(--red); font-size: .6rem; font-weight: 900; letter-spacing: .06em; }

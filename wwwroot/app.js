@@ -15,6 +15,7 @@ const appState = {
 
 const PUSH_LEAD_KEY = 'riffroster.pushLeadMinutes';
 const PUSH_CREW_NAMES_KEY = 'riffroster.pushCrewNames';
+const COMPARE_USERS_KEY = 'riffroster.compareUsers';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -47,6 +48,7 @@ function bindEvents() {
   document.addEventListener('click', event => {
     const actionNode = event.target.closest('[data-action]');
     if (actionNode) handleAction(actionNode.dataset.action, actionNode);
+    if (!event.target.closest('[data-action="toggle-attendee-names"]')) closeAttendeeNames();
 
     const viewNode = event.target.closest('[data-view]');
     if (viewNode) changeView(viewNode.dataset.view);
@@ -265,6 +267,13 @@ function performanceHtml(performance, selected, clash, timelinePosition = null) 
   const otherCount = attendees.filter(user => !sameName(user.username, appState.username)).length;
   const isShared = selected && otherCount > 0;
   const end = formatTime(performance.endsAt);
+  const attendeeAvatars = attendees.slice(0, 4).reverse().map(user => avatarHtml(user, true)).join('');
+  const attendeeNames = attendees.map(user => user.username).join(', ');
+  const expandableAttendees = appState.activeView === 'mine' && attendees.length > 0;
+  const attendeeBadges = expandableAttendees
+    ? `<button type="button" class="attendance-avatars attendance-avatars--expandable" data-action="toggle-attendee-names" aria-expanded="false" aria-label="Show attendee names for ${escapeHtml(performance.artist)}">${attendeeAvatars}</button>
+       <span class="attendance-names-popover" hidden>${escapeHtml(attendeeNames)}</span>`
+    : `<div class="attendance-avatars">${attendeeAvatars}</div>`;
   let attendanceText = 'No picks yet';
   if (selected && otherCount) attendanceText = `<strong>You + ${otherCount}</strong> going`;
   else if (selected) attendanceText = 'Only you — so far';
@@ -279,7 +288,7 @@ function performanceHtml(performance, selected, clash, timelinePosition = null) 
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>
     </button>
     <div class="attendance">
-      <div class="attendance-avatars">${attendees.slice(0, 4).reverse().map(user => avatarHtml(user, true)).join('')}</div>
+      ${attendeeBadges}
       <span class="attendance-label">${attendanceText}</span>
     </div>
     ${clash ? '<span class="clash-label">CLASH IN YOUR ROUTE</span>' : ''}
@@ -474,6 +483,7 @@ async function createPerformance(event) {
 
 function handleAction(action, node) {
   if (action === 'toggle-pick') togglePick(node.dataset.id);
+  if (action === 'toggle-attendee-names') toggleAttendeeNames(node);
   if (action === 'sign-out') signOut();
   if (action === 'open-event-modal') openEventModal();
   if (action === 'open-performance-modal') openPerformanceModal();
@@ -517,17 +527,71 @@ function toggleStage(stage) {
 function toggleCompareUser(username) {
   if (appState.compareUsers.has(username)) appState.compareUsers.delete(username);
   else appState.compareUsers.add(username);
+  persistCompareUsers();
   renderComparePicker();
   renderCompare();
 }
 
 function initializeCompareUsers() {
-  const validNames = new Set(appState.data.users.map(user => user.username));
-  appState.compareUsers = new Set([...appState.compareUsers].filter(name => validNames.has(name)));
-  if (!appState.compareUsers.size) {
-    appState.compareUsers.add(appState.username);
-    appState.data.users.filter(user => !sameName(user.username, appState.username)).slice(0, 2).forEach(user => appState.compareUsers.add(user.username));
+  const storedUsers = readStoredCompareUsers();
+  if (storedUsers) {
+    appState.compareUsers = new Set(appState.data.users
+      .filter(user => storedUsers.some(name => sameName(name, user.username)))
+      .map(user => user.username));
+    persistCompareUsers();
+    return;
   }
+
+  appState.compareUsers = new Set([appState.username]);
+  appState.data.users
+    .filter(user => !sameName(user.username, appState.username))
+    .slice(0, 2)
+    .forEach(user => appState.compareUsers.add(user.username));
+  persistCompareUsers();
+}
+
+function compareUsersStorageKey() {
+  return `${COMPARE_USERS_KEY}.${encodeURIComponent(appState.username.toLocaleLowerCase())}`;
+}
+
+function readStoredCompareUsers() {
+  try {
+    const stored = localStorage.getItem(compareUsersStorageKey());
+    if (stored === null) return null;
+    const users = JSON.parse(stored);
+    return Array.isArray(users) && users.every(user => typeof user === 'string') ? users : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCompareUsers() {
+  try {
+    localStorage.setItem(compareUsersStorageKey(), JSON.stringify([...appState.compareUsers]));
+  } catch { /* Compare choices can still work for this visit when browser storage is unavailable. */ }
+}
+
+function toggleAttendeeNames(button) {
+  const willExpand = button.getAttribute('aria-expanded') !== 'true';
+  closeAttendeeNames();
+  if (!willExpand) return;
+
+  const performance = button.closest('.performance');
+  const names = $('.attendance-names-popover', performance);
+  if (!names) return;
+  button.setAttribute('aria-expanded', 'true');
+  performance.classList.add('attendee-names-expanded');
+  names.hidden = false;
+}
+
+function closeAttendeeNames() {
+  $$('.attendance-avatars--expandable[aria-expanded="true"]').forEach(button => {
+    button.setAttribute('aria-expanded', 'false');
+    const performance = button.closest('.performance');
+    performance?.classList.remove('attendee-names-expanded');
+    const names = performance && $('.attendance-names-popover', performance);
+    if (names) names.hidden = true;
+  });
 }
 
 function openEventModal() {
