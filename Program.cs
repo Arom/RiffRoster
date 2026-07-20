@@ -213,7 +213,7 @@ namespace RiffRoster
 
     public sealed class DataStore
     {
-        private const int CurrentDataVersion = 2;
+        private const int CurrentDataVersion = 3;
         private readonly object _gate = new();
         private readonly string _path;
         private readonly string _backupDirectory;
@@ -365,21 +365,7 @@ namespace RiffRoster
                     var loaded = JsonSerializer.Deserialize<AppState>(File.ReadAllText(_path), _jsonOptions);
                     if (loaded is not null)
                     {
-                        if (loaded.DataVersion < CurrentDataVersion)
-                        {
-                            var removedUsers = loaded.Users.Count;
-                            var removedSelections = loaded.Selections.Count;
-                            loaded.Users.Clear();
-                            loaded.Selections.Clear();
-                            loaded.DataVersion = CurrentDataVersion;
-                            _state = loaded;
-                            Save();
-                            _logger.LogInformation(
-                                "Updated data to version {DataVersion}; removed {UserCount} users and {SelectionCount} selections.",
-                                CurrentDataVersion,
-                                removedUsers,
-                                removedSelections);
-                        }
+                        ApplyMigrations(loaded);
 
                         return loaded;
                     }
@@ -396,6 +382,44 @@ namespace RiffRoster
             _state = seeded;
             Save();
             return seeded;
+        }
+
+        private void ApplyMigrations(AppState loaded)
+        {
+            if (loaded.DataVersion >= CurrentDataVersion) return;
+
+            _state = loaded;
+            if (loaded.DataVersion < 2)
+            {
+                var removedUsers = loaded.Users.Count;
+                var removedSelections = loaded.Selections.Count;
+                loaded.Users.Clear();
+                loaded.Selections.Clear();
+                loaded.DataVersion = 2;
+                _logger.LogInformation(
+                    "Updated data to version 2; removed {UserCount} users and {SelectionCount} selections.",
+                    removedUsers,
+                    removedSelections);
+            }
+
+            if (loaded.DataVersion < 3)
+            {
+                var eventIndex = loaded.Events.FindIndex(item => item.Id == "brutal-assault-2026");
+                if (eventIndex >= 0)
+                {
+                    var festivalEvent = loaded.Events[eventIndex];
+                    if (festivalEvent.Days.All(day => day.Date != new DateOnly(2026, 8, 4)))
+                        festivalEvent.Days.Add(SeedData.CreateTuesday());
+
+                    festivalEvent.Days.Sort((left, right) => left.Date.CompareTo(right.Date));
+                    loaded.Events[eventIndex] = festivalEvent with { StartDate = new DateOnly(2026, 8, 4) };
+                }
+
+                loaded.DataVersion = 3;
+                _logger.LogInformation("Updated data to version 3; added the Brutal Assault Tuesday warm-up schedule.");
+            }
+
+            Save();
         }
 
         private void Save()

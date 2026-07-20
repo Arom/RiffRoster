@@ -9,6 +9,7 @@ public static class SeedData
     {
         var days = new List<FestivalDay>
         {
+            CreateTuesday(),
             Day(new DateOnly(2026, 8, 5), "Wednesday", Wednesday),
             Day(new DateOnly(2026, 8, 6), "Thursday", Thursday),
             Day(new DateOnly(2026, 8, 7), "Friday", Friday),
@@ -17,12 +18,14 @@ public static class SeedData
 
         return new AppState
         {
-            DataVersion = 2,
-            Events = [new FestivalEvent(EventId, "Brutal Assault 2026", "Josefov Fortress, Czechia", new DateOnly(2026, 8, 5), new DateOnly(2026, 8, 8), days)],
+            DataVersion = 3,
+            Events = [new FestivalEvent(EventId, "Brutal Assault 2026", "Josefov Fortress, Czechia", new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 8), days)],
             Users = [],
             Selections = []
         };
     }
+
+    public static FestivalDay CreateTuesday() => Day(new DateOnly(2026, 8, 4), "Tuesday · Warm-up", Tuesday);
 
     private static FestivalDay Day(DateOnly date, string label, IReadOnlyList<Slot> slots)
     {
@@ -42,6 +45,15 @@ public static class SeedData
     private sealed record Slot(string Stage, string Start, string End, string Artist);
 
     private static Slot S(string stage, string start, string end, string artist) => new(stage, start, end, artist);
+
+    private static readonly Slot[] Tuesday =
+    [
+        S("Obscure", "14:40", "15:10", "Mordloch"), S("Obscure", "15:30", "16:00", "Patriarcha"),
+        S("Obscure", "16:15", "16:50", "Nahum"), S("Obscure", "17:10", "17:50", "První Hoře"),
+        S("Obscure", "18:10", "18:50", "Filth"), S("Obscure", "19:10", "19:50", "Morax"),
+        S("Obscure", "20:10", "20:50", "Ahab"), S("Obscure", "21:10", "21:55", "The Laws performing Sarcófago"),
+        S("KAL", "22:00", "22:50", "Octopoulpe"), S("KAL", "23:30", "00:15", "Bolehlav")
+    ];
 
     private static readonly Slot[] Wednesday =
     [

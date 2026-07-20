@@ -269,11 +269,18 @@ function renderCompare() {
 
   $('#shared-route').innerHTML = shared.length ? shared.map(performance => {
     const attendees = selectedUsers.filter(user => userHasPick(user.username, performance.id));
+    const attendeeNames = attendees.map(user => sameName(user.username, appState.username) ? 'You' : user.username).join(', ');
     return `<div class="route-item">
       <time class="route-item__time">${formatTime(performance.startsAt)}</time>
       <div class="route-item__track"></div>
-      <div class="route-item__act"><b>${escapeHtml(performance.artist)}</b><small>${escapeHtml(performance.stage)} · ${attendees.length === selectedUsers.length ? 'full crew' : `${attendees.length} of ${selectedUsers.length}`}</small></div>
-      <div class="attendance-avatars">${attendees.reverse().map(user => avatarHtml(user, true)).join('')}</div>
+      <div class="route-item__act">
+        <b>${escapeHtml(performance.artist)}</b>
+        <small>${escapeHtml(performance.stage)}<span class="route-match-count"> · ${attendees.length === selectedUsers.length ? 'full crew' : `${attendees.length} of ${selectedUsers.length}`}</span></small>
+        <div class="route-attendee-badges" aria-label="Going: ${escapeHtml(attendeeNames)}">
+          ${attendees.map(user => `<span class="route-attendee-badge" style="--person-color:${user.color}"><i></i>${sameName(user.username, appState.username) ? 'You' : escapeHtml(user.username)}</span>`).join('')}
+        </div>
+      </div>
+      <div class="attendance-avatars">${attendees.slice().reverse().map(user => avatarHtml(user, true)).join('')}</div>
     </div>`;
   }).join('') : '<div class="empty-compact">No shared picks on this day yet. Someone needs to cross into another route.</div>';
 
