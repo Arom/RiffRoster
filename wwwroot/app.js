@@ -247,7 +247,7 @@ function renderSchedule() {
 
   container.innerHTML = `<div class="timeline-swipe-hint">Swipe sideways to compare stages <span aria-hidden="true">↔</span></div>
     <div class="schedule-timeline">
-      <div class="timeline-shell" style="min-width:${shellMinWidth}px;--lane-count:${laneCount};--timeline-height:${timeline.height}px">
+      <div class="timeline-shell" style="min-width:${shellMinWidth}px;--lane-count:${laneCount};--timeline-height:${timeline.height}px;--timeline-half-hour:${timeline.halfHourOffset}px">
         <div class="timeline-header">
           <div class="timeline-corner">TIME</div>
           <div class="timeline-stage-headings">${headings}</div>
@@ -289,7 +289,7 @@ function performanceHtml(performance, selected, clash, timelinePosition = null) 
 function buildTimeline(performances) {
   const minute = 60 * 1000;
   const hour = 60 * minute;
-  const pixelsPerMinute = 1.8;
+  const pixelsPerMinute = 2.2;
   const offsetMinutes = offsetMinutesFromIso(performances[0]?.startsAt);
   const offsetMs = offsetMinutes * minute;
   const earliest = Math.min(...performances.map(performance => new Date(performance.startsAt).getTime()));
@@ -311,7 +311,14 @@ function buildTimeline(performances) {
     });
   }
 
-  return { start, end, height, ticks, pixelsPerMinute };
+  return {
+    start,
+    end,
+    height,
+    ticks,
+    pixelsPerMinute,
+    halfHourOffset: Math.round(30 * pixelsPerMinute)
+  };
 }
 
 function positionOnTimeline(performance, timeline) {
