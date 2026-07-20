@@ -18,7 +18,7 @@ public static class SeedData
 
         return new AppState
         {
-            DataVersion = 4,
+            DataVersion = 5,
             Events = [new FestivalEvent(EventId, "Brutal Assault 2026", "Josefov Fortress, Czechia", new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 8), days)],
             Users = [],
             Selections = []
@@ -72,7 +72,10 @@ public static class SeedData
         S("Main A", "22:20", "23:25", "Triptykon"), S("Octagon", "22:30", "23:30", "Violent Magic Orchestra"),
         S("Obscure", "23:25", "00:15", "Protest the Hero"), S("Main B", "23:30", "00:30", "Amenra"),
         S("Main A", "00:35", "01:30", "Batushka"), S("Obscure", "00:45", "01:30", "Die Krupps"),
-        S("Obscure", "02:00", "02:40", "Witch Club Satan")
+        S("Obscure", "02:00", "02:40", "Witch Club Satan"),
+        S("KAL", "18:30", "19:20", "Hnilomorna"), S("KAL", "20:00", "20:50", "Kariti"),
+        S("KAL", "21:30", "22:20", "Sand Nudes"), S("KAL", "23:00", "00:00", "The Mon"),
+        S("KAL", "00:30", "03:30", "Batsave DJ's")
     ];
 
     private static readonly Slot[] Thursday =
@@ -93,7 +96,10 @@ public static class SeedData
         S("Obscure", "22:25", "23:15", "Aura Noir"), S("Octagon", "22:30", "23:30", "Antimatter"),
         S("Main A", "23:30", "00:30", "Alcest"), S("Obscure", "23:45", "00:30", "Fu Manchu"),
         S("Main B", "00:35", "01:30", "Immolation"), S("Obscure", "01:00", "01:40", "Front Line Assembly"),
-        S("Obscure", "02:10", "02:50", "Tormentor")
+        S("Obscure", "02:10", "02:50", "Tormentor"),
+        S("KAL", "18:30", "19:20", "Petrolio"), S("KAL", "20:00", "20:50", "Ovo"),
+        S("KAL", "21:30", "22:20", "Naher Einer"), S("KAL", "22:50", "23:50", "Blush Response"),
+        S("KAL", "00:00", "01:30", "Philipp Strobel"), S("KAL", "01:30", "03:30", "Whydie?")
     ];
 
     private static readonly Slot[] Friday =
@@ -113,7 +119,11 @@ public static class SeedData
         S("Main A", "22:15", "23:15", "Eivør"), S("Obscure", "22:00", "22:50", "Misþyrming"),
         S("Octagon", "22:30", "23:30", "Mortal Sin"), S("Main B", "23:20", "00:20", "Katatonia"),
         S("Obscure", "23:20", "00:10", "Marduk"), S("Main A", "00:25", "01:25", "Old Man's Child"),
-        S("Obscure", "00:40", "01:25", "Vio-Lence"), S("Obscure", "01:55", "02:40", "Pig")
+        S("Obscure", "00:40", "01:25", "Vio-Lence"), S("Obscure", "01:55", "02:40", "Pig"),
+        S("KAL", "18:30", "19:10", "Utarm"), S("KAL", "20:00", "20:50", "Draugveil"),
+        S("KAL", "21:30", "22:30", "Nadja"), S("KAL", "22:50", "23:35", "Jadran"),
+        S("KAL", "00:00", "00:40", "Arottenbit"), S("KAL", "01:00", "02:00", "The Goondock Saint"),
+        S("KAL", "02:20", "03:30", "Celina")
     ];
 
     private static readonly Slot[] Saturday =
@@ -134,6 +144,10 @@ public static class SeedData
         S("Obscure", "22:00", "22:40", "Cryptopsy"), S("Octagon", "22:30", "23:30", "Der Weg Einer Freiheit"),
         S("Main B", "23:25", "00:25", "Satyricon"), S("Obscure", "23:20", "00:10", "Health"),
         S("Main A", "00:30", "01:30", "Perturbator"), S("Obscure", "00:40", "01:30", "Borknagar"),
-        S("Obscure", "02:00", "02:40", "Carpathian Forest")
+        S("Obscure", "02:00", "02:40", "Carpathian Forest"),
+        S("KAL", "18:30", "19:20", "Krolowczana Smuga"), S("KAL", "20:00", "20:40", "Kalich"),
+        S("KAL", "21:20", "22:10", "Bunkerer"), S("KAL", "22:50", "23:40", "Zaffer 9"),
+        S("KAL", "23:50", "01:00", "Trauma"), S("KAL", "01:00", "02:10", "C4AT"),
+        S("KAL", "02:10", "03:30", "Madona")
     ];
 }

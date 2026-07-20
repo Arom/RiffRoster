@@ -8,6 +8,16 @@ const appState = {
   search: '',
   visibleStages: new Set(),
   compareUsers: new Set(),
+  posterImport: {
+    file: null,
+    imageUrl: null,
+    rows: [],
+    rawText: '',
+    worker: null,
+    processing: false,
+    nextRowId: 1,
+    runId: 0
+  },
   serviceWorkerRegistrationPromise: null,
   pushSubscription: null,
   toastTimer: null
@@ -42,6 +52,10 @@ function bindEvents() {
   });
   $('#event-form').addEventListener('submit', createEvent);
   $('#performance-form').addEventListener('submit', createPerformance);
+  $('#poster-file').addEventListener('change', posterFileChanged);
+  $('#poster-import-rows').addEventListener('input', posterRowChanged);
+  $('#poster-import-rows').addEventListener('change', posterRowChanged);
+  $('#poster-import-modal').addEventListener('close', resetPosterImport);
   $('#notification-lead').addEventListener('change', notificationPreferenceChanged);
   $('#notification-crew-names').addEventListener('change', notificationPreferenceChanged);
 
@@ -487,6 +501,12 @@ function handleAction(action, node) {
   if (action === 'sign-out') signOut();
   if (action === 'open-event-modal') openEventModal();
   if (action === 'open-performance-modal') openPerformanceModal();
+  if (action === 'open-poster-import') openPosterImport();
+  if (action === 'close-poster-import') $('#poster-import-modal').close();
+  if (action === 'start-poster-ocr') startPosterOcr();
+  if (action === 'add-poster-row') addPosterRow();
+  if (action === 'remove-poster-row') removePosterRow(node.dataset.rowId);
+  if (action === 'import-poster-rows') importPosterRows();
   if (action === 'open-notification-modal') openNotificationModal();
   if (action === 'enable-notifications') enableNotifications();
   if (action === 'disable-notifications') disableNotifications();
@@ -617,6 +637,718 @@ function openPerformanceModal() {
   form.elements.endsAt.value = `${baseDate}T12:45`;
   $('.modal-error', form).textContent = '';
   $('#performance-modal').showModal();
+}
+
+function openPosterImport() {
+  if (!appState.isAdmin) return toast('Administrator access is required', true);
+  const activeEvent = currentEvent();
+  if (!activeEvent) return;
+  resetPosterImport();
+  $('#poster-import-event-label').textContent = `Importing into ${activeEvent.name}`;
+  $('#poster-import-modal').showModal();
+}
+
+function resetPosterImport() {
+  const state = appState.posterImport;
+  state.runId++;
+  if (state.worker) state.worker.terminate().catch(() => {});
+  if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+  state.file = null;
+  state.imageUrl = null;
+  state.rows = [];
+  state.rawText = '';
+  state.worker = null;
+  state.processing = false;
+  state.nextRowId = 1;
+
+  const fileInput = $('#poster-file');
+  fileInput.value = '';
+  fileInput.disabled = false;
+  $('.poster-file-picker span').textContent = 'Choose poster';
+  $('#poster-preview').removeAttribute('src');
+  $('#poster-preview').hidden = true;
+  $('#poster-preview-empty').hidden = false;
+  $('#poster-ocr-start').disabled = true;
+  $('#poster-ocr-start').textContent = 'Read poster';
+  $('#poster-review').hidden = true;
+  $('#poster-import-rows').innerHTML = '';
+  $('#poster-raw-text').textContent = '';
+  $('#poster-import-error').textContent = '';
+  updatePosterOcrStatus('idle', 'Choose a poster to begin', 'Extraction may take around a minute on a phone.', 0, false);
+}
+
+function posterFileChanged(event) {
+  const file = event.target.files?.[0];
+  const errorNode = $('#poster-import-error');
+  errorNode.textContent = '';
+  if (!file) return;
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    event.target.value = '';
+    errorNode.textContent = 'Choose a PNG, JPEG or WebP image.';
+    return;
+  }
+  if (file.size > 25 * 1024 * 1024) {
+    event.target.value = '';
+    errorNode.textContent = 'That poster is larger than 25 MB. Export a smaller copy and try again.';
+    return;
+  }
+
+  const state = appState.posterImport;
+  if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+  state.file = file;
+  state.imageUrl = URL.createObjectURL(file);
+  state.rows = [];
+  state.rawText = '';
+  $('.poster-file-picker span').textContent = file.name;
+  $('#poster-preview').src = state.imageUrl;
+  $('#poster-preview').hidden = false;
+  $('#poster-preview-empty').hidden = true;
+  $('#poster-ocr-start').disabled = false;
+  $('#poster-ocr-start').textContent = 'Read poster';
+  $('#poster-review').hidden = true;
+  updatePosterOcrStatus('idle', 'Poster ready on this device', 'Press Read poster to extract acts, dates, stages and times.', 0, false);
+}
+
+async function startPosterOcr() {
+  const state = appState.posterImport;
+  if (!state.file || state.processing) return;
+  if (!window.Tesseract) {
+    $('#poster-import-error').textContent = 'The OCR engine did not load. Refresh the page and try again.';
+    return;
+  }
+
+  const runId = ++state.runId;
+  state.processing = true;
+  state.rows = [];
+  $('#poster-import-error').textContent = '';
+  $('#poster-review').hidden = true;
+  $('#poster-file').disabled = true;
+  $('#poster-ocr-start').disabled = true;
+  $('#poster-ocr-start').textContent = 'Reading…';
+  updatePosterOcrStatus('working', 'Preparing the poster', 'Improving contrast for small timetable text.', 2, true);
+
+  try {
+    const preparedImage = await prepareImageForOcr(state.file);
+    if (runId !== state.runId) return;
+    state.worker = await Tesseract.createWorker('eng', Tesseract.OEM.LSTM, {
+      workerPath: '/vendor/tesseract/worker.min.js',
+      corePath: '/vendor/tesseract/core',
+      langPath: '/vendor/tesseract/lang',
+      logger: message => updatePosterOcrProgress(message, runId),
+      errorHandler: error => console.warn('Poster OCR worker error.', error)
+    });
+    if (runId !== state.runId) return;
+    await state.worker.setParameters({
+      tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT,
+      preserve_interword_spaces: '1'
+    });
+    const result = await state.worker.recognize(preparedImage.blob, { rotateAuto: true }, { text: true, tsv: true });
+    if (runId !== state.runId) return;
+
+    state.rawText = result.data.text || '';
+    state.rows = parsePosterSchedule(result.data.tsv || '', state.rawText, currentEvent(), preparedImage.classifyTextColor);
+    $('#poster-raw-text').textContent = state.rawText || 'No text was recognized.';
+    renderPosterRows();
+    $('#poster-review').hidden = false;
+    const detail = state.rows.length
+      ? 'Compare each row with the original poster and correct anything that looks wrong.'
+      : 'No schedule rows were found. You can add rows manually or try a clearer image.';
+    updatePosterOcrStatus('ready', `${state.rows.length} ${plural(state.rows.length, 'act')} extracted`, detail, 100, false);
+  } catch (error) {
+    if (runId === state.runId) {
+      console.warn('Poster OCR failed.', error);
+      $('#poster-import-error').textContent = 'The poster could not be read. Try a sharper, higher-resolution image.';
+      updatePosterOcrStatus('error', 'Could not read this poster', 'The image remains on this device and can still be used for manual entry.', 0, false);
+    }
+  } finally {
+    if (state.worker) await state.worker.terminate().catch(() => {});
+    if (runId === state.runId) {
+      state.worker = null;
+      state.processing = false;
+      $('#poster-file').disabled = false;
+      $('#poster-ocr-start').disabled = !state.file;
+      $('#poster-ocr-start').textContent = 'Read again';
+    }
+  }
+}
+
+function updatePosterOcrProgress(message, runId) {
+  if (runId !== appState.posterImport.runId) return;
+  const labels = {
+    'loading tesseract core': 'Loading the on-device OCR engine',
+    'initializing tesseract': 'Starting the on-device OCR engine',
+    'loading language traineddata': 'Loading the English recognition model',
+    'initializing api': 'Preparing text recognition',
+    'recognizing text': 'Reading timetable text'
+  };
+  const progress = Math.round((message.progress || 0) * 100);
+  updatePosterOcrStatus('working', labels[message.status] || 'Reading the poster', `${progress}% complete. Keep this window open.`, progress, true);
+}
+
+function updatePosterOcrStatus(state, title, detail, progress, showProgress) {
+  $('#poster-ocr-status').dataset.state = state;
+  $('#poster-ocr-status-title').textContent = title;
+  $('#poster-ocr-status-detail').textContent = detail;
+  $('#poster-ocr-progress').value = progress;
+  $('#poster-ocr-progress').hidden = !showProgress;
+}
+
+async function prepareImageForOcr(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const longestEdge = Math.max(bitmap.width, bitmap.height);
+    let scale = Math.min(2, 2800 / longestEdge);
+    const scaledPixels = bitmap.width * bitmap.height * scale * scale;
+    if (scaledPixels > 10_000_000) scale *= Math.sqrt(10_000_000 / scaledPixels);
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(bitmap, 0, 0, width, height);
+    const image = context.getImageData(0, 0, width, height);
+    const sourcePixels = new Uint8ClampedArray(image.data);
+    let luminanceTotal = 0;
+    for (let index = 0; index < image.data.length; index += 4)
+      luminanceTotal += image.data[index] * .299 + image.data[index + 1] * .587 + image.data[index + 2] * .114;
+    const shouldInvert = luminanceTotal / (image.data.length / 4) < 118;
+    for (let index = 0; index < image.data.length; index += 4) {
+      let luminance = image.data[index] * .299 + image.data[index + 1] * .587 + image.data[index + 2] * .114;
+      if (shouldInvert) luminance = 255 - luminance;
+      luminance = Math.max(0, Math.min(255, (luminance - 128) * 1.45 + 128));
+      image.data[index] = luminance;
+      image.data[index + 1] = luminance;
+      image.data[index + 2] = luminance;
+    }
+    context.putImageData(image, 0, 0);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob(
+      blob => blob ? resolve(blob) : reject(new Error('Could not prepare the poster image.')),
+      'image/png'
+    ));
+    return {
+      blob,
+      classifyTextColor: box => classifyPosterTextColor(sourcePixels, width, height, box)
+    };
+  } finally {
+    bitmap.close();
+  }
+}
+
+function classifyPosterTextColor(pixels, width, height, box) {
+  const left = Math.max(0, Math.floor(box.left));
+  const top = Math.max(0, Math.floor(box.top));
+  const right = Math.min(width, Math.ceil(box.left + box.width));
+  const bottom = Math.min(height, Math.ceil(box.top + box.height));
+  const stride = Math.max(1, Math.floor(Math.max(right - left, bottom - top) / 90));
+  let yellow = 0;
+  let white = 0;
+  for (let y = top; y < bottom; y += stride) {
+    for (let x = left; x < right; x += stride) {
+      const index = (y * width + x) * 4;
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      if (red > 115 && green > 75 && red > blue * 1.35 && green > blue * 1.18) yellow++;
+      else if (red > 125 && green > 125 && blue > 125 && Math.max(red, green, blue) - Math.min(red, green, blue) < 58) white++;
+    }
+  }
+  if (yellow >= 5 && yellow > white * .18) return 'yellow';
+  if (white >= 5) return 'white';
+  return null;
+}
+
+function parsePosterSchedule(tsv, rawText, festivalEvent, classifyTextColor = null) {
+  let lines = parseTsvLines(tsv);
+  if (!lines.length) {
+    lines = rawText.split(/\r?\n/).map((text, index) => ({
+      text: text.trim(), left: 0, top: index * 20, width: 1000, height: 18, confidence: 40
+    })).filter(line => line.text);
+  }
+
+  const dayHeadings = findPosterDayHeadings(lines, festivalEvent);
+  const knownStages = [...new Set((festivalEvent?.days || []).flatMap(day => day.performances.map(performance => performance.stage)))];
+  const stageHeadings = findPosterStageHeadings(lines, knownStages);
+  const rows = [];
+  const seen = new Set();
+  const spatialPerformances = extractSpatialPosterPerformances(parseTsvWords(tsv), festivalEvent, classifyTextColor);
+  const linePerformances = spatialPerformances.length ? [] : lines.flatMap(extractPerformancesFromLine);
+
+  for (const performance of [...spatialPerformances, ...linePerformances]) {
+      const dayMatch = inferPosterHeading(performance, dayHeadings, 1);
+      const stageMatch = inferPosterHeading(performance, stageHeadings, .2);
+      const dayDate = dayMatch?.value || currentDay()?.date || festivalEvent?.days[0]?.date || '';
+      const availableStages = [...new Set([...knownStages, ...stageHeadings.map(heading => heading.value)])];
+      const mainA = availableStages.find(stage => normalizePosterText(stage).replace('STAGE', '').replace(/\s/g, '') === 'MAINA');
+      const mainB = availableStages.find(stage => normalizePosterText(stage).replace('STAGE', '').replace(/\s/g, '') === 'MAINB');
+      let stage = stageMatch?.value || knownStages[0] || 'Stage 1';
+      const matchedMainStage = stageMatch && (stageMatch.value === mainA || stageMatch.value === mainB);
+      if (matchedMainStage && performance.colorHint === 'yellow') stage = mainA;
+      if (matchedMainStage && performance.colorHint === 'white') stage = mainB;
+      const key = `${dayDate}|${stage.toLocaleLowerCase()}|${performance.start}|${performance.artist.toLocaleLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({
+        id: appState.posterImport.nextRowId++,
+        dayDate,
+        stage,
+        start: performance.start,
+        end: performance.end,
+        artist: performance.artist,
+        needsReview: performance.confidence < 72 || !performance.end || !dayMatch || !stageMatch ||
+          ((stage === mainA || stage === mainB) && !performance.colorHint)
+      });
+  }
+
+  const dayIndex = new Map((festivalEvent?.days || []).map((day, index) => [day.date, index]));
+  return rows.sort((a, b) =>
+    (dayIndex.get(a.dayDate) ?? 999) - (dayIndex.get(b.dayDate) ?? 999) ||
+    scheduleMinutes(a.start) - scheduleMinutes(b.start) ||
+    a.stage.localeCompare(b.stage));
+}
+
+function parseTsvWords(tsv) {
+  const records = tsv.split(/\r?\n/);
+  if (!records.length) return [];
+  const defaultHeader = ['level', 'page_num', 'block_num', 'par_num', 'line_num', 'word_num', 'left', 'top', 'width', 'height', 'conf', 'text'];
+  const hasHeader = records[0].split('\t')[0] === 'level';
+  const header = hasHeader ? records[0].split('\t') : defaultHeader;
+  const indexOf = name => header.indexOf(name);
+  const words = [];
+  for (const record of records.slice(hasHeader ? 1 : 0)) {
+    if (!record.trim()) continue;
+    const fields = record.split('\t');
+    if (Number(fields[indexOf('level')]) !== 5) continue;
+    const text = fields.slice(indexOf('text')).join('\t').trim();
+    if (!text) continue;
+    words.push({
+      text,
+      left: Number(fields[indexOf('left')]) || 0,
+      top: Number(fields[indexOf('top')]) || 0,
+      width: Number(fields[indexOf('width')]) || 0,
+      height: Number(fields[indexOf('height')]) || 0,
+      confidence: Number(fields[indexOf('conf')]) || 0
+    });
+  }
+  return words;
+}
+
+function extractSpatialPosterPerformances(words, festivalEvent, classifyTextColor) {
+  if (!words.length) return [];
+  const timeWords = words.map(word => ({ word, parsed: parsePosterTimeToken(word.text) })).filter(item => item.parsed);
+  const primaryTimes = timeWords.filter(item => item.parsed.hasSeparator);
+  const medianHeight = median(words.map(word => word.height).filter(Boolean)) || 14;
+  const verticalTolerance = Math.max(7, medianHeight * .75);
+  const pairDistance = Math.max(70, medianHeight * 8);
+  const pageWidth = Math.max(...words.map(word => word.left + word.width));
+  const regularDayCount = Math.max(2, Math.min(7, (festivalEvent?.days.length || 5) - 1));
+  const columnSpan = pageWidth / regularDayCount;
+  const consumedEnds = new Set();
+  const performances = [];
+
+  const timeBands = [];
+  for (const item of [...primaryTimes].sort((a, b) => wordCenterY(a.word) - wordCenterY(b.word))) {
+    const centerY = wordCenterY(item.word);
+    let band = timeBands.find(candidate => Math.abs(candidate.centerY - centerY) <= verticalTolerance);
+    if (!band) {
+      band = { centerY, items: [] };
+      timeBands.push(band);
+    }
+    band.items.push(item);
+    band.centerY = band.items.reduce((sum, candidate) => sum + wordCenterY(candidate.word), 0) / band.items.length;
+  }
+  const orderedStarts = timeBands.flatMap(band => band.items.sort((a, b) => a.word.left - b.word.left));
+  for (const start of orderedStarts) {
+    if (consumedEnds.has(start.word)) continue;
+    const startCenterY = wordCenterY(start.word);
+    const end = timeWords
+      .filter(candidate => candidate.word !== start.word && !consumedEnds.has(candidate.word))
+      .filter(candidate => candidate.word.left > start.word.left + start.word.width)
+      .filter(candidate => Math.abs(wordCenterY(candidate.word) - startCenterY) <= verticalTolerance)
+      .filter(candidate => candidate.word.left - (start.word.left + start.word.width) <= pairDistance)
+      .sort((a, b) => a.word.left - b.word.left)[0] || null;
+    if (end) consumedEnds.add(end.word);
+
+    const artistStart = end ? end.word.left + end.word.width : start.word.left + start.word.width;
+    const nextStart = primaryTimes
+      .filter(candidate => candidate.word !== start.word && candidate.word !== end?.word && !consumedEnds.has(candidate.word))
+      .filter(candidate => candidate.word.left > artistStart)
+      .filter(candidate => Math.abs(wordCenterY(candidate.word) - startCenterY) <= verticalTolerance)
+      .sort((a, b) => a.word.left - b.word.left)[0] || null;
+    const boundary = Math.min(nextStart?.word.left ?? Number.POSITIVE_INFINITY, start.word.left + columnSpan);
+    const artistWords = words
+      .filter(word => word !== start.word && word !== end?.word)
+      .filter(word => word.left >= artistStart - 3 && word.left < boundary)
+      .filter(word => Math.abs(wordCenterY(word) - startCenterY) <= verticalTolerance)
+      .sort((a, b) => a.left - b.left);
+    const artist = cleanPosterArtist(artistWords.map(word => word.text).join(' '));
+    if (!artist || !/[\p{L}\p{N}]/u.test(artist)) continue;
+    const confidenceWords = [start.word, ...(end ? [end.word] : []), ...artistWords];
+    const artistBox = artistWords.length ? {
+      left: Math.min(...artistWords.map(word => word.left)),
+      top: Math.min(...artistWords.map(word => word.top)),
+      width: Math.max(...artistWords.map(word => word.left + word.width)) - Math.min(...artistWords.map(word => word.left)),
+      height: Math.max(...artistWords.map(word => word.top + word.height)) - Math.min(...artistWords.map(word => word.top))
+    } : null;
+    performances.push({
+      artist: artist.slice(0, 160),
+      start: start.parsed.value,
+      end: end?.parsed.value || '',
+      left: start.word.left,
+      top: Math.min(...confidenceWords.map(word => word.top)),
+      width: Math.max(40, boundary - start.word.left),
+      height: Math.max(...confidenceWords.map(word => word.top + word.height)) - Math.min(...confidenceWords.map(word => word.top)),
+      confidence: confidenceWords.reduce((sum, word) => sum + word.confidence, 0) / confidenceWords.length,
+      colorHint: artistBox && classifyTextColor ? classifyTextColor(artistBox) : null
+    });
+  }
+  return performances;
+}
+
+function parsePosterTimeToken(value) {
+  const token = String(value).trim();
+  const separated = token.match(/^([0-2OIl]?[0-9OIl])\s*[:.;]\s*([0-5OIls][0-9OIls])$/i);
+  const compact = token.match(/^([0-2OIl]?[0-9OIl])([0-5OIls][0-9OIls])$/i);
+  const match = separated || compact;
+  if (!match) return null;
+  const hours = Number(normalizeOcrDigits(match[1]));
+  const minutes = Number(normalizeOcrDigits(match[2]));
+  if (hours > 23 || minutes > 59) return null;
+  return { value: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`, hasSeparator: Boolean(separated) };
+}
+
+function wordCenterY(word) {
+  return word.top + word.height / 2;
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function parseTsvLines(tsv) {
+  const records = tsv.split(/\r?\n/);
+  if (!records.length) return [];
+  const defaultHeader = ['level', 'page_num', 'block_num', 'par_num', 'line_num', 'word_num', 'left', 'top', 'width', 'height', 'conf', 'text'];
+  const hasHeader = records[0].split('\t')[0] === 'level';
+  const header = hasHeader ? records[0].split('\t') : defaultHeader;
+  const indexOf = name => header.indexOf(name);
+  const groups = new Map();
+
+  for (const record of records.slice(hasHeader ? 1 : 0)) {
+    if (!record.trim()) continue;
+    const fields = record.split('\t');
+    if (Number(fields[indexOf('level')]) !== 5) continue;
+    const text = fields.slice(indexOf('text')).join('\t').trim();
+    if (!text) continue;
+    const key = ['page_num', 'block_num', 'par_num', 'line_num'].map(name => fields[indexOf(name)]).join(':');
+    const word = {
+      text,
+      left: Number(fields[indexOf('left')]) || 0,
+      top: Number(fields[indexOf('top')]) || 0,
+      width: Number(fields[indexOf('width')]) || 0,
+      height: Number(fields[indexOf('height')]) || 0,
+      confidence: Number(fields[indexOf('conf')]) || 0
+    };
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(word);
+  }
+
+  return [...groups.values()].map(words => {
+    words.sort((a, b) => a.left - b.left);
+    const left = Math.min(...words.map(word => word.left));
+    const top = Math.min(...words.map(word => word.top));
+    const right = Math.max(...words.map(word => word.left + word.width));
+    const bottom = Math.max(...words.map(word => word.top + word.height));
+    return {
+      text: words.map(word => word.text).join(' '),
+      left,
+      top,
+      width: right - left,
+      height: bottom - top,
+      confidence: words.reduce((sum, word) => sum + word.confidence, 0) / words.length
+    };
+  }).sort((a, b) => a.top - b.top || a.left - b.left);
+}
+
+function extractPerformancesFromLine(line) {
+  const matches = findPosterTimes(line.text);
+  if (!matches.length) return [];
+  const results = [];
+  const pairCount = Math.max(1, Math.floor(matches.length / 2));
+  for (let pair = 0; pair < pairCount; pair++) {
+    const start = matches[pair * 2];
+    const end = matches[pair * 2 + 1];
+    const next = matches[pair * 2 + 2];
+    const artistStart = end?.end ?? start.end;
+    const artistEnd = next?.index ?? line.text.length;
+    const artist = cleanPosterArtist(line.text.slice(artistStart, artistEnd));
+    if (!artist || !/[\p{L}\p{N}]/u.test(artist)) continue;
+    const ratio = line.text.length ? start.index / line.text.length : 0;
+    results.push({
+      artist: artist.slice(0, 160),
+      start: start.value,
+      end: end?.value || '',
+      left: line.left + line.width * ratio,
+      top: line.top,
+      width: Math.max(40, line.width / pairCount),
+      height: line.height,
+      confidence: line.confidence
+    });
+  }
+  return results;
+}
+
+function findPosterTimes(text) {
+  const matches = [];
+  const expression = /(^|[\s|])(?:([0-2OIl]?[0-9OIl])\s*[:.;]\s*([0-5OIl][0-9OIl])|([0-2OIl]?[0-9OIl])([0-5OIl][0-9OIl]))(?=$|[\s|])/gi;
+  let match;
+  while ((match = expression.exec(text)) !== null) {
+    const prefixLength = match[1].length;
+    const tokenIndex = match.index + prefixLength;
+    if (!matches.length && tokenIndex > 8) continue;
+    if (matches.length && /[\p{L}\p{N}]/u.test(text.slice(matches.at(-1).end, tokenIndex))) break;
+    const hours = Number(normalizeOcrDigits(match[2] || match[4]));
+    const minutes = Number(normalizeOcrDigits(match[3] || match[5]));
+    if (hours > 23 || minutes > 59) continue;
+    matches.push({
+      index: tokenIndex,
+      end: expression.lastIndex,
+      value: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+    });
+    if (matches.length === 2) break;
+  }
+  return matches;
+}
+
+function normalizeOcrDigits(value) {
+  return String(value).replace(/[Oo]/g, '0').replace(/[Il|]/g, '1').replace(/[Ss]/g, '5');
+}
+
+function cleanPosterArtist(value) {
+  return value
+    .replace(/^[\s|~_\-–—>→:;.,]+/, '')
+    .replace(/[\s|~_\-–—>→:;.,]+$/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function findPosterDayHeadings(lines, festivalEvent) {
+  const headings = [];
+  for (const line of lines.filter(item => findPosterTimes(item.text).length === 0)) {
+    for (const day of festivalEvent?.days || []) {
+      const normalized = normalizePosterText(line.text);
+      const date = new Date(`${day.date}T00:00:00Z`);
+      const weekday = new Intl.DateTimeFormat('en', { weekday: 'short', timeZone: 'UTC' }).format(date).toUpperCase();
+      const [, month, dateOfMonth] = day.date.split('-');
+      const datePattern = new RegExp(`(^|\\D)0?${Number(dateOfMonth)}[./-]0?${Number(month)}(\\D|$)`);
+      const label = normalizePosterText(day.label).slice(0, 3);
+      const tokens = normalized.split(' ');
+      if (!tokens.includes(weekday) && !tokens.includes(label) && !datePattern.test(line.text)) continue;
+      headings.push({ value: day.date, left: line.left, top: line.top, width: line.width, height: line.height });
+    }
+  }
+  return headings;
+}
+
+function findPosterStageHeadings(lines, knownStages) {
+  const headings = [];
+  const noTimes = lines.filter(item => findPosterTimes(item.text).length === 0);
+  for (const line of noTimes) {
+    const normalized = normalizePosterText(line.text);
+    for (const stage of knownStages) {
+      const stageText = normalizePosterText(stage).replace(/\bSTAGE\b/g, '').replace(/\s+/g, ' ').trim();
+      const searchable = normalized.replace(/STAGE/g, '').replace(/\s+/g, ' ').trim();
+      const searchableCompact = searchable.replace(/\s/g, '');
+      const stageCompact = stageText.replace(/\s/g, '');
+      const matchIndex = stageText.includes(' ')
+        ? searchableCompact.indexOf(stageCompact)
+        : searchable.split(' ').findIndex(token => token === stageText);
+      if (stageText.length < 3 || matchIndex < 0) continue;
+      const ratio = searchable.length ? Math.min(1, matchIndex / searchable.length) : .5;
+      headings.push({ value: stage, left: line.left + line.width * ratio, top: line.top, width: Math.max(60, line.width / Math.max(1, knownStages.length)), height: line.height });
+    }
+
+    if (knownStages.length) continue;
+    for (const match of normalized.matchAll(/MAIN\s*STAGE\s*([A-Z0-9])/g)) {
+      const ratio = normalized.length ? match.index / normalized.length : .5;
+      headings.push({ value: `Main ${match[1]}`, left: line.left + line.width * ratio, top: line.top, width: Math.max(60, line.width / 3), height: line.height });
+    }
+    const namedStage = ['OBSCURE', 'OCTAGON', 'KAL'].find(name => normalized.split(' ').includes(name));
+    if (namedStage)
+      headings.push({ value: namedStage === 'KAL' ? 'KAL' : titleCase(namedStage), left: line.left, top: line.top, width: line.width, height: line.height });
+    else if (/\b(STAGE|TENT|ARENA|HALL|DOME)\b/.test(normalized))
+      headings.push({ value: cleanPosterArtist(line.text).slice(0, 100), left: line.left, top: line.top, width: line.width, height: line.height });
+  }
+  return headings;
+}
+
+function titleCase(value) {
+  return String(value).toLocaleLowerCase().replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase());
+}
+
+function inferPosterHeading(item, headings, horizontalWeight) {
+  const itemCenter = item.left + item.width / 2;
+  return headings
+    .filter(heading => heading.top <= item.top + 4)
+    .map(heading => {
+      const headingCenter = heading.left + heading.width / 2;
+      const verticalDistance = item.top - heading.top;
+      return { ...heading, score: verticalDistance + Math.abs(itemCenter - headingCenter) * horizontalWeight };
+    })
+    .sort((a, b) => a.score - b.score)[0] || null;
+}
+
+function normalizePosterText(value) {
+  return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9]+/gi, ' ').trim().toUpperCase();
+}
+
+function renderPosterRows() {
+  const state = appState.posterImport;
+  const eventDays = currentEvent()?.days || [];
+  const stages = [...new Set([...stagesForEvent(), ...state.rows.map(row => row.stage).filter(Boolean)])];
+  $('#poster-stage-options').innerHTML = stages.map(stage => `<option value="${escapeHtml(stage)}"></option>`).join('');
+  $('#poster-import-rows').innerHTML = state.rows.map(row => `
+    <tr data-row-id="${row.id}" class="${row.needsReview ? 'needs-review' : ''}">
+      <td><select data-field="dayDate" aria-label="Festival day for ${escapeHtml(row.artist)}">${eventDays.map(day => `<option value="${day.date}" ${day.date === row.dayDate ? 'selected' : ''}>${escapeHtml(day.label)}</option>`).join('')}</select></td>
+      <td><input data-field="stage" list="poster-stage-options" value="${escapeHtml(row.stage)}" aria-label="Stage for ${escapeHtml(row.artist)}"></td>
+      <td><input data-field="start" type="time" value="${escapeHtml(row.start)}" aria-label="Start time for ${escapeHtml(row.artist)}"></td>
+      <td><input data-field="end" type="time" value="${escapeHtml(row.end)}" aria-label="End time for ${escapeHtml(row.artist)}"></td>
+      <td><input data-field="artist" value="${escapeHtml(row.artist)}" aria-label="Artist name"></td>
+      <td><button class="poster-row-remove" type="button" data-action="remove-poster-row" data-row-id="${row.id}" aria-label="Remove ${escapeHtml(row.artist)}">×</button></td>
+    </tr>`).join('');
+  updatePosterValidation();
+}
+
+function posterRowChanged(event) {
+  const input = event.target.closest('[data-field]');
+  if (!input) return;
+  const rowNode = input.closest('[data-row-id]');
+  const row = appState.posterImport.rows.find(item => item.id === Number(rowNode.dataset.rowId));
+  if (!row) return;
+  row[input.dataset.field] = input.value;
+  row.needsReview = false;
+  rowNode.classList.remove('needs-review');
+  updatePosterValidation();
+}
+
+function addPosterRow() {
+  const day = currentDay() || currentEvent()?.days[0];
+  appState.posterImport.rows.push({
+    id: appState.posterImport.nextRowId++,
+    dayDate: day?.date || '',
+    stage: stagesForEvent()[0] || 'Stage 1',
+    start: '12:00',
+    end: '12:45',
+    artist: '',
+    needsReview: true
+  });
+  renderPosterRows();
+  $('#poster-import-rows tr:last-child input[data-field="artist"]')?.focus();
+}
+
+function removePosterRow(rowId) {
+  appState.posterImport.rows = appState.posterImport.rows.filter(row => row.id !== Number(rowId));
+  renderPosterRows();
+}
+
+function updatePosterValidation() {
+  const rows = appState.posterImport.rows;
+  let validCount = 0;
+  rows.forEach(row => {
+    const errors = validatePosterRow(row);
+    if (!Object.keys(errors).length) validCount++;
+    const rowNode = $(`#poster-import-rows [data-row-id="${row.id}"]`);
+    if (!rowNode) return;
+    $$('[data-field]', rowNode).forEach(input => {
+      const invalid = Boolean(errors[input.dataset.field]);
+      input.classList.toggle('invalid', invalid);
+      input.setAttribute('aria-invalid', String(invalid));
+      input.title = errors[input.dataset.field] || '';
+    });
+  });
+
+  $('#poster-row-count').textContent = `${rows.length} extracted ${plural(rows.length, 'act')}`;
+  const invalidCount = rows.length - validCount;
+  $('#poster-import-validation').textContent = !rows.length
+    ? 'Add at least one corrected row to import.'
+    : invalidCount
+      ? `${invalidCount} ${plural(invalidCount, 'row')} still ${invalidCount === 1 ? 'needs' : 'need'} attention.`
+      : `${validCount} ${plural(validCount, 'act')} ready to import.`;
+  $('#poster-import-submit').disabled = !rows.length || invalidCount > 0 || appState.posterImport.processing;
+}
+
+function validatePosterRow(row) {
+  const errors = {};
+  const eventDayDates = new Set((currentEvent()?.days || []).map(day => day.date));
+  if (!eventDayDates.has(row.dayDate)) errors.dayDate = 'Choose a valid festival day.';
+  if (!row.stage.trim()) errors.stage = 'Enter a stage.';
+  if (!/^\d{2}:\d{2}$/.test(row.start)) errors.start = 'Enter a start time.';
+  if (!/^\d{2}:\d{2}$/.test(row.end)) errors.end = 'Enter an end time.';
+  if (!row.artist.trim()) errors.artist = 'Enter an artist.';
+  if (!Object.keys(errors).length) {
+    const payload = posterRowToPayload(row);
+    const duration = new Date(payload.endsAt) - new Date(payload.startsAt);
+    if (duration <= 0 || duration > 24 * 60 * 60 * 1000) errors.end = 'Choose an end time within 24 hours of the start.';
+  }
+  return errors;
+}
+
+function posterRowToPayload(row) {
+  const startMinutes = timeMinutes(row.start);
+  const endMinutes = timeMinutes(row.end);
+  const startOffset = startMinutes < 6 * 60 ? 1 : 0;
+  let endOffset = endMinutes < 6 * 60 ? 1 : 0;
+  if (endOffset < startOffset || (endOffset === startOffset && endMinutes <= startMinutes)) endOffset = startOffset + 1;
+  return {
+    artist: row.artist.trim(),
+    stage: row.stage.trim(),
+    startsAt: localDateTimeToOffsetIso(`${addIsoDays(row.dayDate, startOffset)}T${row.start}`),
+    endsAt: localDateTimeToOffsetIso(`${addIsoDays(row.dayDate, endOffset)}T${row.end}`)
+  };
+}
+
+async function importPosterRows() {
+  const state = appState.posterImport;
+  const invalidRows = state.rows.filter(row => Object.keys(validatePosterRow(row)).length);
+  if (!state.rows.length || invalidRows.length) return updatePosterValidation();
+  const button = $('#poster-import-submit');
+  const errorNode = $('#poster-import-error');
+  errorNode.textContent = '';
+  button.disabled = true;
+  button.textContent = 'Importing…';
+  try {
+    const result = await api(`/api/events/${encodeURIComponent(appState.activeEventId)}/performances/bulk`, {
+      method: 'POST',
+      body: JSON.stringify({ performances: state.rows.map(posterRowToPayload) })
+    });
+    $('#poster-import-modal').close();
+    await loadApp();
+    const duplicateMessage = result.skippedDuplicates ? `; ${result.skippedDuplicates} exact ${plural(result.skippedDuplicates, 'duplicate')} skipped` : '';
+    toast(`${result.created.length} ${plural(result.created.length, 'act')} imported${duplicateMessage}`);
+  } catch (error) {
+    errorNode.textContent = error.message;
+    button.disabled = false;
+    button.textContent = 'Import corrected acts';
+  }
+}
+
+function timeMinutes(value) {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+function scheduleMinutes(value) {
+  const minutes = timeMinutes(value);
+  return minutes < 6 * 60 ? minutes + 24 * 60 : minutes;
+}
+
+function addIsoDays(value, days) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function applyStoredNotificationPreferences() {

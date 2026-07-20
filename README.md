@@ -76,8 +76,9 @@ Do not scale the service beyond one replica while using the JSON store. If the a
 
 ## Included features
 
-- 139 seeded Brutal Assault 2026 performances, including Tuesday warm-up
+- 164 seeded Brutal Assault 2026 performances, including Tuesday warm-up and every KAL slot
 - Multiple running orders and administrator editing
+- Browser-only poster OCR with a side-by-side image and editable import review; poster files are never uploaded or stored
 - Per-user band picks and visible friend attendance
 - Time-scaled Running order and My route views that make overlaps visible across stage lanes
 - Crew comparison with full-group matches, shared picks, and solo detours
@@ -95,3 +96,7 @@ Do not scale the service beyond one replica while using the JSON store. If the a
 - `Dockerfile` — production .NET 10 container
 - `railway.json` — Railway build and health-check settings
 - `App_Data/store.json` — generated local runtime data, ignored by git
+
+## OCR components
+
+Poster recognition uses self-hosted Tesseract.js 7, Tesseract.js Core 7, and the English Tesseract language data. The browser downloads these static components from RiffRoster itself and performs recognition locally. Third-party license texts are included under `wwwroot/vendor/tesseract/licenses/`.

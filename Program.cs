@@ -229,6 +229,29 @@ api.MapPost("/events/{eventId}/performances", (string eventId, CreatePerformance
         : Results.Ok(performance);
 }).RequireAuthorization("Admin");
 
+api.MapPost("/events/{eventId}/performances/bulk", (string eventId, BulkCreatePerformancesRequest request, DataStore store) =>
+{
+    if (request.Performances is null || request.Performances.Count is < 1 or > 500)
+        return Results.BadRequest(new { message = "Choose between 1 and 500 performances to import." });
+
+    foreach (var performance in request.Performances)
+    {
+        if (string.IsNullOrWhiteSpace(performance.Artist) || string.IsNullOrWhiteSpace(performance.Stage))
+            return Results.BadRequest(new { message = "Every performance needs an artist and stage." });
+        if (performance.Artist.Length > 160 || performance.Stage.Length > 100)
+            return Results.BadRequest(new { message = "An artist or stage name is too long." });
+        if (performance.EndsAt <= performance.StartsAt)
+            return Results.BadRequest(new { message = "Every end time must be after its start time." });
+        if (performance.EndsAt - performance.StartsAt > TimeSpan.FromHours(24))
+            return Results.BadRequest(new { message = "A performance cannot run for more than 24 hours." });
+    }
+
+    var result = store.AddPerformances(eventId, request.Performances);
+    return result is null
+        ? Results.NotFound(new { message = "Running order not found, or a performance falls outside its dates." })
+        : Results.Ok(result);
+}).RequireAuthorization("Admin");
+
 app.MapFallbackToFile("index.html");
 app.Run();
 
@@ -238,6 +261,8 @@ namespace RiffRoster
     public sealed record ToggleSelectionRequest(string PerformanceId);
     public sealed record CreateEventRequest(string Name, string Location, DateOnly StartDate, DateOnly EndDate);
     public sealed record CreatePerformanceRequest(string Artist, string Stage, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
+    public sealed record BulkCreatePerformancesRequest(List<CreatePerformanceRequest>? Performances);
+    public sealed record BulkPerformanceImportResult(List<Performance> Created, int SkippedDuplicates);
 
     public sealed class SecuritySettings(string inviteCode, string adminCode)
     {
@@ -294,7 +319,7 @@ namespace RiffRoster
 
     public sealed partial class DataStore
     {
-        private const int CurrentDataVersion = 4;
+        private const int CurrentDataVersion = 5;
         private readonly object _gate = new();
         private readonly string _path;
         private readonly string _backupDirectory;
@@ -425,6 +450,67 @@ namespace RiffRoster
             }
         }
 
+        public BulkPerformanceImportResult? AddPerformances(string eventId, IReadOnlyList<CreatePerformanceRequest> requests)
+        {
+            lock (_gate)
+            {
+                var festivalEvent = _state.Events.FirstOrDefault(item => item.Id == eventId);
+                if (festivalEvent is null) return null;
+
+                var candidates = new List<(FestivalDay Day, CreatePerformanceRequest Request)>();
+                foreach (var request in requests)
+                {
+                    var localDateTime = request.StartsAt.DateTime;
+                    var localDate = DateOnly.FromDateTime(localDateTime);
+                    var scheduleDate = localDateTime.TimeOfDay < TimeSpan.FromHours(6) ? localDate.AddDays(-1) : localDate;
+                    var day = festivalEvent.Days.FirstOrDefault(item => item.Date == scheduleDate);
+                    if (day is null) return null;
+                    candidates.Add((day, request));
+                }
+
+                var known = festivalEvent.Days
+                    .SelectMany(day => day.Performances)
+                    .Select(PerformanceKey)
+                    .ToHashSet();
+                var created = new List<Performance>();
+                var skippedDuplicates = 0;
+
+                foreach (var candidate in candidates)
+                {
+                    var key = PerformanceKey(candidate.Request);
+                    if (!known.Add(key))
+                    {
+                        skippedDuplicates++;
+                        continue;
+                    }
+
+                    var performance = new Performance(
+                        $"perf-{Guid.NewGuid():N}",
+                        candidate.Request.Artist.Trim(),
+                        candidate.Request.Stage.Trim(),
+                        candidate.Request.StartsAt,
+                        candidate.Request.EndsAt);
+                    candidate.Day.Performances.Add(performance);
+                    created.Add(performance);
+                }
+
+                if (created.Count > 0)
+                {
+                    foreach (var day in candidates.Select(candidate => candidate.Day).Distinct())
+                        day.Performances.Sort((a, b) => a.StartsAt.CompareTo(b.StartsAt));
+                    Save();
+                }
+
+                return new BulkPerformanceImportResult(created, skippedDuplicates);
+            }
+        }
+
+        private static (string Artist, string Stage, DateTimeOffset StartsAt, DateTimeOffset EndsAt) PerformanceKey(Performance performance) =>
+            (performance.Artist.Trim().ToUpperInvariant(), performance.Stage.Trim().ToUpperInvariant(), performance.StartsAt, performance.EndsAt);
+
+        private static (string Artist, string Stage, DateTimeOffset StartsAt, DateTimeOffset EndsAt) PerformanceKey(CreatePerformanceRequest performance) =>
+            (performance.Artist.Trim().ToUpperInvariant(), performance.Stage.Trim().ToUpperInvariant(), performance.StartsAt, performance.EndsAt);
+
         public bool CreateBackup()
         {
             lock (_gate)
@@ -511,6 +597,35 @@ namespace RiffRoster
                 loaded.ReminderDeliveries ??= [];
                 loaded.DataVersion = 4;
                 _logger.LogInformation("Updated data to version 4; enabled per-device concert reminders.");
+            }
+
+            if (loaded.DataVersion < 5)
+            {
+                var festivalEvent = loaded.Events.FirstOrDefault(item => item.Id == "brutal-assault-2026");
+                var seededEvent = SeedData.Create().Events.First(item => item.Id == "brutal-assault-2026");
+                var added = 0;
+                if (festivalEvent is not null)
+                {
+                    foreach (var seededDay in seededEvent.Days)
+                    {
+                        var targetDay = festivalEvent.Days.FirstOrDefault(day => day.Date == seededDay.Date);
+                        if (targetDay is null) continue;
+                        foreach (var performance in seededDay.Performances.Where(item => item.Stage == "KAL"))
+                        {
+                            var exists = targetDay.Performances.Any(item =>
+                                item.Stage.Equals(performance.Stage, StringComparison.OrdinalIgnoreCase) &&
+                                item.Artist.Equals(performance.Artist, StringComparison.OrdinalIgnoreCase) &&
+                                item.StartsAt == performance.StartsAt);
+                            if (exists) continue;
+                            targetDay.Performances.Add(performance);
+                            added++;
+                        }
+                        targetDay.Performances.Sort((left, right) => left.StartsAt.CompareTo(right.StartsAt));
+                    }
+                }
+
+                loaded.DataVersion = 5;
+                _logger.LogInformation("Updated data to version 5; added {PerformanceCount} missing KAL performances.", added);
             }
 
             Save();
