@@ -1,0 +1,5 @@
+bin/
+obj/
+.appdata/
+App_Data/
+outputs/

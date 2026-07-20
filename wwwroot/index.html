@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0a0c">
+  <title>RiffRoster — find your shared festival route</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section class="login-screen" id="login-screen">
+    <div class="login-noise" aria-hidden="true"></div>
+    <div class="login-brand">
+      <a class="brand brand--large" href="#" aria-label="RiffRoster home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>RIFF<span>//</span>ROSTER</span>
+      </a>
+      <p class="eyebrow">THE GROUP CLASHFINDER</p>
+      <h1>Same festival.<br><em>One shared route.</em></h1>
+      <p class="login-copy">Pick the bands you refuse to miss. See where the crew overlaps, where you split up, and when to meet again.</p>
+      <div class="preview-route" aria-hidden="true">
+        <div><span>16:25</span><b>CROWBAR</b><small>YOU + 3</small></div>
+        <div class="route-line"></div>
+        <div><span>18:10</span><b>NEVERMORE</b><small>YOU + MIRA</small></div>
+        <div class="route-line route-line--solo"></div>
+        <div class="solo-preview"><span>20:05</span><b>PERIPHERY</b><small>YOUR DETOUR</small></div>
+      </div>
+    </div>
+    <form class="login-card" id="login-form">
+      <span class="login-step">PRIVATE CREW ACCESS</span>
+      <h2>Who’s joining?</h2>
+      <p>Enter your username and the access code shared by your festival crew.</p>
+      <label for="username">Your username</label>
+      <input id="username" name="username" minlength="2" maxlength="24" autocomplete="nickname" placeholder="e.g. Arom" required autofocus>
+      <label for="access-code">Access code</label>
+      <input id="access-code" name="accessCode" type="password" minlength="1" maxlength="128" autocomplete="current-password" placeholder="Crew invite code" required>
+      <p class="field-hint">Friends will see your username beside your picks. Only the code is private.</p>
+      <button class="button button--primary button--wide" type="submit">
+        Enter the pit <span aria-hidden="true">→</span>
+      </button>
+      <p class="login-error" id="login-error" role="alert"></p>
+    </form>
+  </section>
+
+  <div class="app" id="app" hidden>
+    <header class="topbar">
+      <a class="brand" href="#" data-action="view-schedule" aria-label="RiffRoster home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>RIFF<span>//</span>ROSTER</span>
+      </a>
+      <div class="topbar-actions">
+        <button class="icon-button" data-action="open-event-modal" data-admin-only title="New running order" aria-label="New running order">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <div class="crew-stack" id="crew-stack" aria-label="People in this clashfinder"></div>
+        <span class="admin-badge" id="admin-badge" hidden>ADMIN</span>
+        <button class="profile-button" id="profile-button" data-action="sign-out" title="Sign out"></button>
+      </div>
+    </header>
+
+    <main>
+      <section class="event-strip">
+        <div class="event-select-wrap">
+          <span class="eyebrow">RUNNING ORDER</span>
+          <select id="event-select" aria-label="Choose running order"></select>
+        </div>
+        <div class="event-meta" id="event-meta"></div>
+        <button class="button button--ghost button--compact" data-action="open-event-modal" data-admin-only>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          New running order
+        </button>
+      </section>
+
+      <nav class="view-nav" aria-label="App sections">
+        <button class="view-nav__item active" data-view="schedule">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
+          Running order
+        </button>
+        <button class="view-nav__item" data-view="mine">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>
+          My route <span class="count-badge" id="my-count">0</span>
+        </button>
+        <button class="view-nav__item" data-view="compare">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8 2a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 21a6 6 0 0 1 12 0M13 21a5 5 0 0 1 9 0"/></svg>
+          Compare crew
+        </button>
+      </nav>
+
+      <section id="schedule-view">
+        <div class="schedule-toolbar">
+          <div class="day-tabs" id="day-tabs" role="tablist"></div>
+          <div class="toolbar-actions">
+            <label class="search-box">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="search-input" type="search" placeholder="Find a band" aria-label="Find a band">
+            </label>
+            <button class="button button--ghost button--compact" data-action="open-performance-modal" data-admin-only>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Add act
+            </button>
+          </div>
+        </div>
+        <div class="stage-filters" id="stage-filters"></div>
+        <div class="schedule-summary" id="schedule-summary"></div>
+        <div class="schedule-grid" id="schedule-grid"></div>
+      </section>
+
+      <section id="compare-view" hidden>
+        <div class="compare-header">
+          <div>
+            <span class="eyebrow">CREW COMPASS</span>
+            <h2>Where paths converge.</h2>
+            <p>Select two or more people to reveal the group’s shared route and every solo detour.</p>
+          </div>
+          <div class="compare-day-wrap">
+            <label for="compare-day">Festival day</label>
+            <select id="compare-day"></select>
+          </div>
+        </div>
+        <div class="people-picker" id="people-picker"></div>
+        <div class="compare-stats" id="compare-stats"></div>
+        <div class="compare-layout">
+          <section class="route-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-kicker">TOGETHER</span>
+                <h3>Shared route</h3>
+              </div>
+              <span class="legend-dot legend-dot--shared"></span>
+            </div>
+            <div class="route-list" id="shared-route"></div>
+          </section>
+          <section class="route-panel route-panel--solo">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-kicker">SPLIT UP</span>
+                <h3>Solo detours</h3>
+              </div>
+              <span class="legend-dot"></span>
+            </div>
+            <div class="detour-list" id="solo-routes"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <nav class="mobile-nav" aria-label="App sections">
+      <button class="active" data-view="schedule"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg><span>Schedule</span></button>
+      <button data-view="mine"><svg viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg><span>My route</span></button>
+      <button data-view="compare"><svg viewBox="0 0 24 24"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm8 2a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 21a6 6 0 0 1 12 0M13 21a5 5 0 0 1 9 0"/></svg><span>Compare</span></button>
+    </nav>
+  </div>
+
+  <dialog id="event-modal">
+    <form method="dialog" class="modal-card" id="event-form">
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">×</button>
+      <span class="eyebrow">NEW RUNNING ORDER</span>
+      <h2>Start another festival.</h2>
+      <p>Create the container now, then add acts stage by stage.</p>
+      <label>Name<input name="name" required placeholder="e.g. Roadburn 2027"></label>
+      <label>Location<input name="location" required placeholder="City or venue"></label>
+      <div class="form-row">
+        <label>First day<input name="startDate" type="date" required></label>
+        <label>Last day<input name="endDate" type="date" required></label>
+      </div>
+      <p class="modal-error" role="alert"></p>
+      <button class="button button--primary button--wide" value="default">Create running order</button>
+    </form>
+  </dialog>
+
+  <dialog id="performance-modal">
+    <form method="dialog" class="modal-card" id="performance-form">
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">×</button>
+      <span class="eyebrow">ADD TO SCHEDULE</span>
+      <h2>Add an act.</h2>
+      <p id="performance-event-label"></p>
+      <label>Artist<input name="artist" required placeholder="Band name"></label>
+      <label>Stage<input name="stage" required placeholder="e.g. Main A"></label>
+      <div class="form-row">
+        <label>Starts<input name="startsAt" type="datetime-local" required></label>
+        <label>Ends<input name="endsAt" type="datetime-local" required></label>
+      </div>
+      <p class="modal-error" role="alert"></p>
+      <button class="button button--primary button--wide" value="default">Add to running order</button>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

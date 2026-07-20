@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+.git/
+.appdata/
+App_Data/
+outputs/
+work/
+*.zip
