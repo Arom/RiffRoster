@@ -37,9 +37,20 @@ RIFFROSTER_ADMIN_CODE=<a different random code of at least 16 characters>
 RIFFROSTER_DATA_PATH=/data/store.json
 RIFFROSTER_BACKUP_DIR=/data/backups
 RIFFROSTER_KEYS_PATH=/data/keys
+RIFFROSTER_VAPID_PUBLIC_KEY=<generated public Web Push key>
+RIFFROSTER_VAPID_PRIVATE_KEY=<generated private Web Push key>
+RIFFROSTER_VAPID_SUBJECT=https://your-riffroster-domain.example/
 ```
 
 Use a password manager to generate both codes. Share only `RIFFROSTER_INVITE_CODE` with friends. Anyone using `RIFFROSTER_ADMIN_CODE` can add running orders and performances. Changing either code invalidates existing sessions.
+
+Generate the Web Push keys once, then copy the two values into Railway without committing them:
+
+```powershell
+dotnet run -- --generate-vapid
+```
+
+Keep the same VAPID keys across deployments so existing browser subscriptions continue to work. `RIFFROSTER_VAPID_SUBJECT` must be an HTTPS URL or `mailto:` address identifying the operator.
 
 Railway should detect the Dockerfile automatically. Its deployment health check calls `/api/health`. The app listens on port `8080`, which Railway discovers and exposes through HTTPS.
 
@@ -47,7 +58,7 @@ Railway should detect the Dockerfile automatically. Its deployment health check 
 
 Everything under `/data` lives on the Railway volume:
 
-- `store.json` contains users, events, selections, and performances.
+- `store.json` contains users, events, selections, performances, browser push subscriptions, and reminder delivery records.
 - `backups/` retains up to 14 daily JSON snapshots.
 - `keys/` keeps session-encryption keys across deployments.
 
@@ -65,18 +76,20 @@ Do not scale the service beyond one replica while using the JSON store. If the a
 
 ## Included features
 
-- 129 seeded Brutal Assault 2026 performances
+- 139 seeded Brutal Assault 2026 performances, including Tuesday warm-up
 - Multiple running orders and administrator editing
 - Per-user band picks and visible friend attendance
-- A focused “My route” view with automatic time-clash warnings
+- Time-scaled Running order and My route views that make overlaps visible across stage lanes
 - Crew comparison with full-group matches, shared picks, and solo detours
 - Schedule search and stage filters
 - Responsive desktop and mobile layouts
+- Installable PWA with opt-in per-device concert reminders and optional crew names
 - JSON persistence with automatic daily snapshots
 
 ## Project shape
 
 - `Program.cs` — authentication, HTTP endpoints, data store, and backup worker
+- `PushNotifications.cs` — Web Push subscriptions, reminder scheduling, delivery, and deduplication
 - `SeedData.cs` — starter running order with an empty crew
 - `wwwroot/` — responsive browser interface
 - `Dockerfile` — production .NET 10 container

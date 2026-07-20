@@ -8,15 +8,22 @@ const appState = {
   search: '',
   visibleStages: new Set(),
   compareUsers: new Set(),
+  serviceWorkerRegistrationPromise: null,
+  pushSubscription: null,
   toastTimer: null
 };
+
+const PUSH_LEAD_KEY = 'riffroster.pushLeadMinutes';
+const PUSH_CREW_NAMES_KEY = 'riffroster.pushCrewNames';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
+  applyStoredNotificationPreferences();
   $('#username').value = appState.username;
+  registerServiceWorker();
   loadApp();
 });
 
@@ -34,6 +41,8 @@ function bindEvents() {
   });
   $('#event-form').addEventListener('submit', createEvent);
   $('#performance-form').addEventListener('submit', createPerformance);
+  $('#notification-lead').addEventListener('change', notificationPreferenceChanged);
+  $('#notification-crew-names').addEventListener('change', notificationPreferenceChanged);
 
   document.addEventListener('click', event => {
     const actionNode = event.target.closest('[data-action]');
@@ -87,6 +96,9 @@ async function loadApp() {
     initializeCompareUsers();
     showApp();
     renderAll();
+    focusPerformanceFromNotification();
+    refreshNotificationState({ sync: true }).catch(error =>
+      console.warn('RiffRoster could not refresh notification settings.', error));
   } catch (error) {
     showLogin();
     if (error.status !== 401) $('#login-error').textContent = `Could not load the running order: ${error.message}`;
@@ -184,14 +196,13 @@ function renderSchedule() {
   );
 
   const visibleStageNames = allStages.filter(stage => appState.visibleStages.has(stage) && performances.some(performance => performance.stage === stage));
-  container.style.setProperty('--columns', Math.max(visibleStageNames.length, 1));
   const selectedToday = day.performances.filter(performance => myIds.has(performance.id));
   const conflicts = findConflicts(selectedToday);
   const conflictIds = new Set(conflicts.flatMap(pair => pair.map(performance => performance.id)));
 
   $('#schedule-summary').innerHTML = appState.activeView === 'mine'
     ? `<strong>${selectedToday.length} picks</strong> on ${escapeHtml(day.label)}${conflicts.length ? ` · <span style="color:var(--red)">${conflicts.length} clash${conflicts.length === 1 ? '' : 'es'}</span>` : ' · no clashes'}`
-    : `<strong>${day.performances.length} ${plural(day.performances.length, 'act')}</strong> across ${allStages.length} ${plural(allStages.length, 'stage')} · tap the star to build your route`;
+    : `<strong>${day.performances.length} ${plural(day.performances.length, 'act')}</strong> across ${allStages.length} ${plural(allStages.length, 'stage')} · aligned by time so overlaps are easy to spot`;
 
   if (!performances.length) {
     const isBlankEvent = day.performances.length === 0;
@@ -203,17 +214,53 @@ function renderSchedule() {
     return;
   }
 
-  container.innerHTML = visibleStageNames.map((stage, stageIndex) => {
-    const stagePerformances = performances.filter(performance => performance.stage === stage);
+  const timeline = buildTimeline(performances);
+  const laneCount = visibleStageNames.length;
+  const shellMinWidth = 68 + laneCount * 240;
+  const tickLabels = timeline.ticks.map(tick =>
+    `<time class="timeline-tick" style="top:${tick.top}px">${tick.label}</time>`
+  ).join('');
+  const gridLines = timeline.ticks.map(tick =>
+    `<span class="timeline-gridline" style="top:${tick.top}px" aria-hidden="true"></span>`
+  ).join('');
+
+  const headings = visibleStageNames.map(stage => {
+    const count = performances.filter(performance => performance.stage === stage).length;
     const color = stageColor(stage, allStages.indexOf(stage));
-    return `<section class="stage-column" style="--stage-color:${color}">
-      <header class="stage-heading"><h3>${escapeHtml(stage)}</h3><span>${stagePerformances.length} ${plural(stagePerformances.length, 'act')}</span></header>
-      <div class="performance-list">${stagePerformances.map(performance => performanceHtml(performance, myIds.has(performance.id), conflictIds.has(performance.id))).join('')}</div>
+    return `<header class="timeline-stage-heading" style="--stage-color:${color}">
+      <h3>${escapeHtml(stage)}</h3><span>${count} ${plural(count, 'act')}</span>
+    </header>`;
+  }).join('');
+
+  const lanes = visibleStageNames.map(stage => {
+    const color = stageColor(stage, allStages.indexOf(stage));
+    const stagePerformances = performances.filter(performance => performance.stage === stage);
+    return `<section class="timeline-lane" style="--stage-color:${color}" aria-label="${escapeHtml(stage)}">
+      ${stagePerformances.map(performance => performanceHtml(
+        performance,
+        myIds.has(performance.id),
+        conflictIds.has(performance.id),
+        positionOnTimeline(performance, timeline)
+      )).join('')}
     </section>`;
   }).join('');
+
+  container.innerHTML = `<div class="timeline-swipe-hint">Swipe sideways to compare stages <span aria-hidden="true">↔</span></div>
+    <div class="schedule-timeline">
+      <div class="timeline-shell" style="min-width:${shellMinWidth}px;--lane-count:${laneCount};--timeline-height:${timeline.height}px">
+        <div class="timeline-header">
+          <div class="timeline-corner">TIME</div>
+          <div class="timeline-stage-headings">${headings}</div>
+        </div>
+        <div class="timeline-body">
+          <div class="timeline-time-axis">${tickLabels}</div>
+          <div class="timeline-lanes">${gridLines}${lanes}</div>
+        </div>
+      </div>
+    </div>`;
 }
 
-function performanceHtml(performance, selected, clash) {
+function performanceHtml(performance, selected, clash, timelinePosition = null) {
   const attendees = usersForPerformance(performance.id);
   const otherCount = attendees.filter(user => !sameName(user.username, appState.username)).length;
   const isShared = selected && otherCount > 0;
@@ -223,7 +270,9 @@ function performanceHtml(performance, selected, clash) {
   else if (selected) attendanceText = 'Only you — so far';
   else if (attendees.length) attendanceText = `${attendees.length} friend${attendees.length === 1 ? '' : 's'} going`;
 
-  return `<article class="performance ${selected ? 'selected' : ''} ${isShared ? 'shared' : ''} ${clash ? 'clash' : ''}" data-performance-id="${performance.id}">
+  const timelineClass = timelinePosition ? `timeline-performance ${timelinePosition.compact ? 'performance--compact' : ''}` : '';
+  const timelineStyle = timelinePosition ? ` style="top:${timelinePosition.top}px;height:${timelinePosition.height}px"` : '';
+  return `<article class="performance ${timelineClass} ${selected ? 'selected' : ''} ${isShared ? 'shared' : ''} ${clash ? 'clash' : ''}" data-performance-id="${performance.id}" title="${escapeHtml(performance.artist)} · ${formatTime(performance.startsAt)}–${end}"${timelineStyle}>
     <div class="performance-time">${formatTime(performance.startsAt)} <span>→ ${end}</span></div>
     <h4>${escapeHtml(performance.artist)}</h4>
     <button class="pick-button" data-action="toggle-pick" data-id="${performance.id}" aria-label="${selected ? 'Remove' : 'Add'} ${escapeHtml(performance.artist)} ${selected ? 'from' : 'to'} your route" aria-pressed="${selected}">
@@ -235,6 +284,60 @@ function performanceHtml(performance, selected, clash) {
     </div>
     ${clash ? '<span class="clash-label">CLASH IN YOUR ROUTE</span>' : ''}
   </article>`;
+}
+
+function buildTimeline(performances) {
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const pixelsPerMinute = 1.8;
+  const offsetMinutes = offsetMinutesFromIso(performances[0]?.startsAt);
+  const offsetMs = offsetMinutes * minute;
+  const earliest = Math.min(...performances.map(performance => new Date(performance.startsAt).getTime()));
+  const latest = Math.max(...performances.map(performance => new Date(performance.endsAt).getTime()));
+  const localEarliest = earliest + offsetMs;
+  const localLatest = latest + offsetMs;
+  const localStart = Math.floor(localEarliest / hour) * hour - 30 * minute;
+  const localEnd = Math.ceil(localLatest / hour) * hour + 30 * minute;
+  const start = localStart - offsetMs;
+  const end = localEnd - offsetMs;
+  const height = Math.round(((end - start) / minute) * pixelsPerMinute);
+  const ticks = [];
+
+  for (let localTick = Math.ceil(localStart / hour) * hour; localTick < localEnd; localTick += hour) {
+    const epoch = localTick - offsetMs;
+    ticks.push({
+      top: Math.round(((epoch - start) / minute) * pixelsPerMinute),
+      label: formatTimelineTime(epoch, offsetMinutes)
+    });
+  }
+
+  return { start, end, height, ticks, pixelsPerMinute };
+}
+
+function positionOnTimeline(performance, timeline) {
+  const minute = 60 * 1000;
+  const startsAt = new Date(performance.startsAt).getTime();
+  const endsAt = new Date(performance.endsAt).getTime();
+  const top = ((startsAt - timeline.start) / minute) * timeline.pixelsPerMinute;
+  const naturalHeight = ((endsAt - startsAt) / minute) * timeline.pixelsPerMinute - 5;
+  const height = Math.max(32, naturalHeight);
+  return {
+    top: Math.round(top * 10) / 10,
+    height: Math.round(height * 10) / 10,
+    compact: height < 66
+  };
+}
+
+function offsetMinutesFromIso(value) {
+  const match = String(value || '').match(/([+-])(\d{2}):(\d{2})$/);
+  if (!match) return 0;
+  const minutes = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === '-' ? -minutes : minutes;
+}
+
+function formatTimelineTime(epoch, offsetMinutes) {
+  const local = new Date(epoch + offsetMinutes * 60 * 1000);
+  return `${String(local.getUTCHours()).padStart(2, '0')}:${String(local.getUTCMinutes()).padStart(2, '0')}`;
 }
 
 function renderComparePicker() {
@@ -367,6 +470,10 @@ function handleAction(action, node) {
   if (action === 'sign-out') signOut();
   if (action === 'open-event-modal') openEventModal();
   if (action === 'open-performance-modal') openPerformanceModal();
+  if (action === 'open-notification-modal') openNotificationModal();
+  if (action === 'enable-notifications') enableNotifications();
+  if (action === 'disable-notifications') disableNotifications();
+  if (action === 'test-notification') sendTestNotification();
   if (action === 'close-modal') node.closest('dialog').close();
   if (action === 'view-schedule') changeView('schedule');
 }
@@ -441,6 +548,248 @@ function openPerformanceModal() {
   $('#performance-modal').showModal();
 }
 
+function applyStoredNotificationPreferences() {
+  const storedLead = Number(localStorage.getItem(PUSH_LEAD_KEY));
+  $('#notification-lead').value = [10, 20, 30, 60].includes(storedLead) ? String(storedLead) : '20';
+  $('#notification-crew-names').checked = localStorage.getItem(PUSH_CREW_NAMES_KEY) !== 'false';
+}
+
+function notificationPreferences() {
+  return {
+    leadMinutes: Number($('#notification-lead').value),
+    includeCrewNames: $('#notification-crew-names').checked
+  };
+}
+
+function saveNotificationPreferences() {
+  const preferences = notificationPreferences();
+  localStorage.setItem(PUSH_LEAD_KEY, String(preferences.leadMinutes));
+  localStorage.setItem(PUSH_CREW_NAMES_KEY, String(preferences.includeCrewNames));
+  return preferences;
+}
+
+function supportsPushNotifications() {
+  return window.isSecureContext &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window &&
+    'Notification' in window;
+}
+
+function isIosDevice() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function isStandaloneApp() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return null;
+  try {
+    if (!appState.serviceWorkerRegistrationPromise)
+      appState.serviceWorkerRegistrationPromise = navigator.serviceWorker.register('/service-worker.js');
+    return await appState.serviceWorkerRegistrationPromise;
+  } catch (error) {
+    appState.serviceWorkerRegistrationPromise = null;
+    console.warn('RiffRoster could not register its service worker.', error);
+    return null;
+  }
+}
+
+async function openNotificationModal() {
+  $('#notification-error').textContent = '';
+  $('#notification-modal').showModal();
+  await refreshNotificationState();
+}
+
+async function refreshNotificationState({ sync = false } = {}) {
+  const iosInstallRequired = isIosDevice() && !isStandaloneApp();
+  $('#ios-install-note').hidden = !iosInstallRequired;
+
+  if (!supportsPushNotifications()) {
+    renderNotificationStatus('unavailable', 'Not supported on this device', 'Try an up-to-date version of Chrome, Edge, Firefox, or an installed iPhone Home Screen app.');
+    return;
+  }
+  if (iosInstallRequired) {
+    renderNotificationStatus('install', 'Home Screen install required', 'Apple only enables Web Push for installed Home Screen web apps.');
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    renderNotificationStatus('denied', 'Notifications are blocked', 'Allow notifications for RiffRoster in this device’s browser or system settings.');
+    return;
+  }
+
+  const registration = await registerServiceWorker();
+  if (!registration) {
+    renderNotificationStatus('unavailable', 'Reminders are unavailable', 'The background service could not start on this device.');
+    return;
+  }
+
+  let subscription;
+  try {
+    subscription = await registration.pushManager.getSubscription();
+  } catch (error) {
+    console.warn('RiffRoster could not read this browser subscription.', error);
+    renderNotificationStatus('unavailable', 'Reminders are unavailable', 'This browser could not access its notification subscription. Try again shortly.');
+    return;
+  }
+  appState.pushSubscription = subscription;
+  if (!subscription) {
+    renderNotificationStatus('off', 'Off on this device', 'Enable reminders to receive alerts for your selected performances.');
+    return;
+  }
+
+  if (sync && appState.data) {
+    try {
+      await persistPushSubscription(subscription);
+    } catch (error) {
+      console.warn('RiffRoster could not refresh this push subscription.', error);
+    }
+  }
+  renderNotificationStatus('on', 'On for this device', `${notificationPreferences().leadMinutes} minutes before each selected act.`);
+}
+
+function renderNotificationStatus(status, title, detail) {
+  const statusNode = $('#notification-status');
+  statusNode.dataset.status = status;
+  statusNode.innerHTML = `<span></span><div><b>${escapeHtml(title)}</b><small>${escapeHtml(detail)}</small></div>`;
+  const enabled = status === 'on';
+  $('#enable-notifications').hidden = enabled || ['unavailable', 'install', 'denied'].includes(status);
+  $('#test-notification').hidden = !enabled;
+  $('#disable-notifications').hidden = !enabled;
+  $('#notification-indicator').classList.toggle('active', enabled);
+  $('#notification-lead').disabled = ['unavailable', 'install'].includes(status);
+  $('#notification-crew-names').disabled = ['unavailable', 'install'].includes(status);
+}
+
+async function enableNotifications() {
+  const errorNode = $('#notification-error');
+  errorNode.textContent = '';
+  if (!supportsPushNotifications()) return refreshNotificationState();
+  if (isIosDevice() && !isStandaloneApp()) return refreshNotificationState();
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      await refreshNotificationState();
+      return;
+    }
+
+    const registration = await registerServiceWorker();
+    if (!registration) throw new Error('The background service could not start.');
+    const keyResponse = await api('/api/push/public-key');
+    const existing = await registration.pushManager.getSubscription();
+    const subscription = existing || await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(keyResponse.publicKey)
+    });
+    saveNotificationPreferences();
+    await persistPushSubscription(subscription);
+    appState.pushSubscription = subscription;
+    await refreshNotificationState();
+    toast('Concert reminders enabled');
+  } catch (error) {
+    errorNode.textContent = error.message;
+  }
+}
+
+async function persistPushSubscription(subscription) {
+  const serialized = subscription.toJSON();
+  if (!serialized.keys?.p256dh || !serialized.keys?.auth)
+    throw new Error('The browser did not provide notification encryption keys.');
+  return api('/api/push/subscriptions', {
+    method: 'POST',
+    body: JSON.stringify({
+      endpoint: subscription.endpoint,
+      keys: serialized.keys,
+      ...notificationPreferences()
+    })
+  });
+}
+
+async function notificationPreferenceChanged() {
+  saveNotificationPreferences();
+  if (!appState.pushSubscription) return;
+  try {
+    await persistPushSubscription(appState.pushSubscription);
+    renderNotificationStatus('on', 'On for this device', `${notificationPreferences().leadMinutes} minutes before each selected act.`);
+    toast('Reminder preferences saved');
+  } catch (error) {
+    $('#notification-error').textContent = error.message;
+  }
+}
+
+async function disableNotifications() {
+  const subscription = appState.pushSubscription;
+  if (!subscription) return refreshNotificationState();
+  $('#notification-error').textContent = '';
+  try {
+    await api('/api/push/subscriptions', {
+      method: 'DELETE',
+      body: JSON.stringify({ endpoint: subscription.endpoint })
+    });
+  } catch (error) {
+    console.warn('RiffRoster could not remove the server-side push subscription.', error);
+  }
+
+  try {
+    await subscription.unsubscribe();
+    appState.pushSubscription = null;
+    await refreshNotificationState();
+    toast('Concert reminders turned off');
+  } catch (error) {
+    $('#notification-error').textContent = 'This browser could not turn notifications off. Try again.';
+    console.warn('RiffRoster could not unsubscribe this browser.', error);
+  }
+}
+
+async function sendTestNotification() {
+  if (!appState.pushSubscription) return;
+  $('#notification-error').textContent = '';
+  try {
+    await api('/api/push/test', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint: appState.pushSubscription.endpoint })
+    });
+    toast('Test notification sent');
+  } catch (error) {
+    $('#notification-error').textContent = error.message;
+    if (error.status === 410) await refreshNotificationState();
+  }
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map(character => character.charCodeAt(0)));
+}
+
+function focusPerformanceFromNotification() {
+  const performanceId = new URLSearchParams(window.location.search).get('performance');
+  if (!performanceId || !appState.data) return;
+  for (const festivalEvent of appState.data.events) {
+    for (const day of festivalEvent.days) {
+      if (!day.performances.some(performance => performance.id === performanceId)) continue;
+      appState.activeEventId = festivalEvent.id;
+      appState.activeDayId = day.id;
+      appState.activeView = 'schedule';
+      appState.visibleStages.clear();
+      renderAll();
+      window.history.replaceState({}, '', window.location.pathname);
+      window.requestAnimationFrame(() => {
+        const target = $$('.performance').find(node => node.dataset.performanceId === performanceId);
+        if (!target) return;
+        target.classList.add('notification-target');
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        window.setTimeout(() => target.classList.remove('notification-target'), 5000);
+      });
+      return;
+    }
+  }
+}
+
 function currentEvent() { return eventById(appState.activeEventId); }
 function eventById(id) { return appState.data?.events.find(event => event.id === id); }
 function currentDay() { return currentEvent()?.days.find(day => day.id === appState.activeDayId); }
@@ -511,6 +860,7 @@ function plural(count, word) { return count === 1 ? word : `${word}s`; }
 
 async function signOut() {
   try {
+    await disconnectPushForSignOut();
     await api('/api/session/logout', { method: 'POST' });
   } catch (error) {
     if (error.status !== 401) toast(error.message, true);
@@ -521,6 +871,23 @@ async function signOut() {
     showLogin();
     $('#access-code').focus();
   }
+}
+
+async function disconnectPushForSignOut() {
+  try {
+    const registration = await registerServiceWorker();
+    const subscription = appState.pushSubscription || await registration?.pushManager.getSubscription();
+    if (!subscription) return;
+    try {
+      await api('/api/push/subscriptions', {
+        method: 'DELETE',
+        body: JSON.stringify({ endpoint: subscription.endpoint })
+      });
+    } catch { /* Signing out must still succeed if the server is temporarily unavailable. */ }
+    await subscription.unsubscribe();
+    appState.pushSubscription = null;
+    $('#notification-indicator').classList.remove('active');
+  } catch { /* Notification cleanup is best effort during sign-out. */ }
 }
 
 function avatarHtml(user, small = false) {

@@ -6,13 +6,23 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Mvc;
 using RiffRoster;
+using WebPush;
+
+if (args.Any(argument => argument.Equals("--generate-vapid", StringComparison.OrdinalIgnoreCase)))
+{
+    var generatedKeys = VapidHelper.GenerateVapidKeys();
+    Console.WriteLine(JsonSerializer.Serialize(new { publicKey = generatedKeys.PublicKey, privateKey = generatedKeys.PrivateKey }));
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 if (builder.Environment.IsDevelopment()) builder.Logging.AddDebug();
 var security = SecuritySettings.FromConfiguration(builder.Configuration, builder.Environment);
+var pushSettings = PushSettings.FromConfiguration(builder.Configuration);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -30,8 +40,11 @@ if (!string.IsNullOrWhiteSpace(keysPath))
 }
 
 builder.Services.AddSingleton(security);
+builder.Services.AddSingleton(pushSettings);
 builder.Services.AddSingleton<DataStore>();
+builder.Services.AddSingleton<PushNotificationSender>();
 builder.Services.AddHostedService<BackupService>();
+builder.Services.AddHostedService<PushReminderService>();
 builder.Services
     .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
@@ -76,7 +89,7 @@ app.UseAuthorization();
 
 var api = app.MapGroup("/api");
 
-api.MapGet("/health", (DataStore store) => Results.Ok(store.GetHealthSnapshot()))
+api.MapGet("/health", (DataStore store, PushSettings settings) => Results.Ok(store.GetHealthSnapshot(settings.Enabled)))
     .AllowAnonymous();
 
 api.MapPost("/session", async (LoginRequest request, DataStore store, SecuritySettings settings, HttpContext context) =>
@@ -125,6 +138,72 @@ api.MapPost("/selections/toggle", (ToggleSelectionRequest request, HttpContext c
     return result is null
         ? Results.NotFound(new { message = "That performance no longer exists." })
         : Results.Ok(result);
+}).RequireAuthorization();
+
+api.MapGet("/push/public-key", (PushSettings settings) =>
+    settings.Enabled
+        ? Results.Ok(new { publicKey = settings.PublicKey })
+        : Results.Json(new { message = "Push notifications are not configured yet." }, statusCode: StatusCodes.Status503ServiceUnavailable))
+    .RequireAuthorization();
+
+api.MapPost("/push/subscriptions", (SavePushSubscriptionRequest request, HttpContext context, DataStore store, PushSettings settings) =>
+{
+    if (!settings.Enabled)
+        return Results.Json(new { message = "Push notifications are not configured yet." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    var validationMessage = PushSubscriptionValidator.Validate(request);
+    return validationMessage is null
+        ? Results.Ok(store.UpsertPushSubscription(context.User.Identity!.Name!, request))
+        : Results.BadRequest(new { message = validationMessage });
+}).RequireAuthorization();
+
+api.MapDelete("/push/subscriptions", ([FromBody] DeletePushSubscriptionRequest request, HttpContext context, DataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Endpoint))
+        return Results.BadRequest(new { message = "A push subscription endpoint is required." });
+
+    store.RemovePushSubscription(context.User.Identity!.Name!, request.Endpoint);
+    return Results.NoContent();
+}).RequireAuthorization();
+
+api.MapPost("/push/test", async (TestPushRequest request, HttpContext context, DataStore store, PushNotificationSender sender, ILoggerFactory loggerFactory, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Endpoint))
+        return Results.BadRequest(new { message = "A push subscription endpoint is required." });
+
+    var device = store.GetPushDevice(context.User.Identity!.Name!, request.Endpoint);
+    if (device is null)
+        return Results.NotFound(new { message = "Enable reminders on this device first." });
+
+    var payload = JsonSerializer.Serialize(new
+    {
+        title = "RiffRoster reminders are on",
+        body = "This device is ready for concert reminders.",
+        icon = "/icons/icon-192.png",
+        badge = "/icons/badge-96.png",
+        tag = "riffroster-test",
+        data = new { url = "/" }
+    });
+
+    try
+    {
+        var outcome = await sender.SendAsync(device, payload, cancellationToken);
+        if (outcome == PushSendOutcome.Expired)
+        {
+            store.RemovePushDevice(device.Id);
+            return Results.Json(new { message = "This browser subscription expired. Enable reminders again." }, statusCode: StatusCodes.Status410Gone);
+        }
+
+        return Results.Ok(new { sent = true });
+    }
+    catch (Exception exception)
+    {
+        loggerFactory.CreateLogger("RiffRoster.PushTest")
+            .LogWarning(exception, "A test push could not be sent for {Username}.", context.User.Identity!.Name!);
+        return Results.Json(
+            new { message = "The test notification could not be sent. Try enabling reminders again." },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
 }).RequireAuthorization();
 
 api.MapPost("/events", (CreateEventRequest request, DataStore store) =>
@@ -203,6 +282,8 @@ namespace RiffRoster
         public List<FestivalEvent> Events { get; set; } = [];
         public List<AppUser> Users { get; set; } = [];
         public List<UserSelection> Selections { get; set; } = [];
+        public List<PushDevice> PushDevices { get; set; } = [];
+        public List<ReminderDelivery> ReminderDeliveries { get; set; } = [];
     }
 
     public sealed record FestivalEvent(string Id, string Name, string Location, DateOnly StartDate, DateOnly EndDate, List<FestivalDay> Days);
@@ -211,9 +292,9 @@ namespace RiffRoster
     public sealed record AppUser(string Username, string Color, DateTimeOffset JoinedAt);
     public sealed record UserSelection(string Username, string PerformanceId);
 
-    public sealed class DataStore
+    public sealed partial class DataStore
     {
-        private const int CurrentDataVersion = 3;
+        private const int CurrentDataVersion = 4;
         private readonly object _gate = new();
         private readonly string _path;
         private readonly string _backupDirectory;
@@ -268,7 +349,7 @@ namespace RiffRoster
             }
         }
 
-        public object GetHealthSnapshot()
+        public object GetHealthSnapshot(bool pushConfigured)
         {
             lock (_gate)
                 return new
@@ -277,6 +358,8 @@ namespace RiffRoster
                     events = _state.Events.Count,
                     users = _state.Users.Count,
                     selections = _state.Selections.Count,
+                    pushConfigured,
+                    pushDevices = _state.PushDevices.Count,
                     checkedAt = DateTimeOffset.UtcNow
                 };
         }
@@ -295,7 +378,10 @@ namespace RiffRoster
                 if (existing is null)
                     _state.Selections.Add(new UserSelection(user.Username, performanceId));
                 else
+                {
                     _state.Selections.Remove(existing);
+                    RemoveReminderDeliveriesForSelection(user.Username, performanceId);
+                }
 
                 Save();
                 return new { selected, performanceId, username = user.Username };
@@ -417,6 +503,14 @@ namespace RiffRoster
 
                 loaded.DataVersion = 3;
                 _logger.LogInformation("Updated data to version 3; added the Brutal Assault Tuesday warm-up schedule.");
+            }
+
+            if (loaded.DataVersion < 4)
+            {
+                loaded.PushDevices ??= [];
+                loaded.ReminderDeliveries ??= [];
+                loaded.DataVersion = 4;
+                _logger.LogInformation("Updated data to version 4; enabled per-device concert reminders.");
             }
 
             Save();

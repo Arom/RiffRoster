@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a0a0c">
   <title>RiffRoster — find your shared festival route</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -51,6 +54,10 @@
       <div class="topbar-actions">
         <button class="icon-button" data-action="open-event-modal" data-admin-only title="New running order" aria-label="New running order">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button class="icon-button notification-button" data-action="open-notification-modal" title="Concert reminders" aria-label="Concert reminder settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+          <span class="notification-indicator" id="notification-indicator" aria-hidden="true"></span>
         </button>
         <div class="crew-stack" id="crew-stack" aria-label="People in this clashfinder"></div>
         <span class="admin-badge" id="admin-badge" hidden>ADMIN</span>
@@ -183,6 +190,47 @@
       <p class="modal-error" role="alert"></p>
       <button class="button button--primary button--wide" value="default">Add to running order</button>
     </form>
+  </dialog>
+
+  <dialog id="notification-modal">
+    <section class="modal-card notification-card" aria-labelledby="notification-heading">
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">×</button>
+      <span class="eyebrow">CONCERT REMINDERS</span>
+      <h2 id="notification-heading">Don’t miss the next act.</h2>
+      <p>Get a notification before your selected performances start—even when RiffRoster is closed.</p>
+
+      <div class="notification-status" id="notification-status" data-status="checking">
+        <span></span>
+        <div><b>Checking this device…</b><small>Please wait a moment.</small></div>
+      </div>
+
+      <div class="ios-install-note" id="ios-install-note" hidden>
+        <b>Install RiffRoster first</b>
+        <p>On iPhone or iPad, open the Share menu, choose <strong>Add to Home Screen</strong>, then open RiffRoster from its new icon.</p>
+      </div>
+
+      <label for="notification-lead">Remind me before each act
+        <select id="notification-lead">
+          <option value="10">10 minutes before</option>
+          <option value="20" selected>20 minutes before</option>
+          <option value="30">30 minutes before</option>
+          <option value="60">1 hour before</option>
+        </select>
+      </label>
+
+      <label class="setting-toggle" for="notification-crew-names">
+        <span><b>Include crew names</b><small>Shows interested friends on the lock screen.</small></span>
+        <input id="notification-crew-names" type="checkbox" checked>
+      </label>
+
+      <div class="notification-actions">
+        <button class="button button--primary" type="button" id="enable-notifications" data-action="enable-notifications">Enable reminders</button>
+        <button class="button button--ghost" type="button" id="test-notification" data-action="test-notification" hidden>Send a test</button>
+        <button class="text-button" type="button" id="disable-notifications" data-action="disable-notifications" hidden>Turn off on this device</button>
+      </div>
+      <p class="modal-error" id="notification-error" role="alert"></p>
+      <p class="notification-fine-print">Delivery is best effort and may be affected by connectivity, battery settings, or Focus/Do Not Disturb.</p>
+    </section>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

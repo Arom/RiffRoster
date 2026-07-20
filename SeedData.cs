@@ -18,7 +18,7 @@ public static class SeedData
 
         return new AppState
         {
-            DataVersion = 3,
+            DataVersion = 4,
             Events = [new FestivalEvent(EventId, "Brutal Assault 2026", "Josefov Fortress, Czechia", new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 8), days)],
             Users = [],
             Selections = []
