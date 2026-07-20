@@ -199,6 +199,7 @@ namespace RiffRoster
 
     public sealed class AppState
     {
+        public int DataVersion { get; set; }
         public List<FestivalEvent> Events { get; set; } = [];
         public List<AppUser> Users { get; set; } = [];
         public List<UserSelection> Selections { get; set; } = [];
@@ -212,6 +213,7 @@ namespace RiffRoster
 
     public sealed class DataStore
     {
+        private const int CurrentDataVersion = 2;
         private readonly object _gate = new();
         private readonly string _path;
         private readonly string _backupDirectory;
@@ -254,7 +256,7 @@ namespace RiffRoster
         {
             lock (_gate)
             {
-                var canonicalName = _state.Users.First(user => user.Username.Equals(username, StringComparison.OrdinalIgnoreCase)).Username;
+                var canonicalName = EnsureUser(username).Username;
                 return new
                 {
                     currentUser = canonicalName,
@@ -269,7 +271,14 @@ namespace RiffRoster
         public object GetHealthSnapshot()
         {
             lock (_gate)
-                return new { status = "ok", events = _state.Events.Count, checkedAt = DateTimeOffset.UtcNow };
+                return new
+                {
+                    status = "ok",
+                    events = _state.Events.Count,
+                    users = _state.Users.Count,
+                    selections = _state.Selections.Count,
+                    checkedAt = DateTimeOffset.UtcNow
+                };
         }
 
         public object? ToggleSelection(string username, string performanceId)
@@ -354,7 +363,26 @@ namespace RiffRoster
                 try
                 {
                     var loaded = JsonSerializer.Deserialize<AppState>(File.ReadAllText(_path), _jsonOptions);
-                    if (loaded is not null) return loaded;
+                    if (loaded is not null)
+                    {
+                        if (loaded.DataVersion < CurrentDataVersion)
+                        {
+                            var removedUsers = loaded.Users.Count;
+                            var removedSelections = loaded.Selections.Count;
+                            loaded.Users.Clear();
+                            loaded.Selections.Clear();
+                            loaded.DataVersion = CurrentDataVersion;
+                            _state = loaded;
+                            Save();
+                            _logger.LogInformation(
+                                "Updated data to version {DataVersion}; removed {UserCount} users and {SelectionCount} selections.",
+                                CurrentDataVersion,
+                                removedUsers,
+                                removedSelections);
+                        }
+
+                        return loaded;
+                    }
                 }
                 catch (JsonException exception)
                 {

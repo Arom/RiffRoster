@@ -15,34 +15,13 @@ public static class SeedData
             Day(new DateOnly(2026, 8, 8), "Saturday", Saturday)
         };
 
-        var users = new List<AppUser>
-        {
-            new("Mira", "#FF6257", DateTimeOffset.UtcNow.AddDays(-9)),
-            new("Dani", "#70D6A7", DateTimeOffset.UtcNow.AddDays(-7)),
-            new("Levi", "#8FB8FF", DateTimeOffset.UtcNow.AddDays(-4))
-        };
-
-        var allPerformances = days.SelectMany(day => day.Performances).ToList();
-        var selections = new List<UserSelection>();
-        Pick("Mira", "Crowbar", "Nevermore", "Triptykon", "Cryptic Shift", "Kittie", "Thy Art Is Murder", "Coroner", "Katatonia", "Candlemass", "Cryptopsy");
-        Pick("Dani", "Crowbar", "Samael", "Triptykon", "Kittie", "Septicflesh", "Coroner", "Clawfinger", "Candlemass", "Satyricon");
-        Pick("Levi", "Unearth", "Crowbar", "Fit for an Autopsy", "Bleed From Within", "Animals as Leaders", "Paleface Swiss", "Imminence", "Cryptopsy");
-
         return new AppState
         {
+            DataVersion = 2,
             Events = [new FestivalEvent(EventId, "Brutal Assault 2026", "Josefov Fortress, Czechia", new DateOnly(2026, 8, 5), new DateOnly(2026, 8, 8), days)],
-            Users = users,
-            Selections = selections
+            Users = [],
+            Selections = []
         };
-
-        void Pick(string username, params string[] artists)
-        {
-            foreach (var artist in artists)
-            {
-                var performance = allPerformances.FirstOrDefault(item => item.Artist.Equals(artist, StringComparison.OrdinalIgnoreCase));
-                if (performance is not null) selections.Add(new UserSelection(username, performance.Id));
-            }
-        }
     }
 
     private static FestivalDay Day(DateOnly date, string label, IReadOnlyList<Slot> slots)

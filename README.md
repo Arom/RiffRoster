@@ -77,7 +77,7 @@ Do not scale the service beyond one replica while using the JSON store. If the a
 ## Project shape
 
 - `Program.cs` — authentication, HTTP endpoints, data store, and backup worker
-- `SeedData.cs` — starter running order and demo crew picks
+- `SeedData.cs` — starter running order with an empty crew
 - `wwwroot/` — responsive browser interface
 - `Dockerfile` — production .NET 10 container
 - `railway.json` — Railway build and health-check settings
