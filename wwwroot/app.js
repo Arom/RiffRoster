@@ -1,9 +1,11 @@
 const appState = {
   data: null,
   username: localStorage.getItem('riffroster.username') || '',
+  loginName: localStorage.getItem('riffroster.loginName') || '',
   isAdmin: false,
   activeEventId: null,
   activeDayId: null,
+  activeGroupId: null,
   activeView: 'schedule',
   search: '',
   visibleStages: new Set(),
@@ -26,6 +28,7 @@ const appState = {
 const PUSH_LEAD_KEY = 'riffroster.pushLeadMinutes';
 const PUSH_CREW_NAMES_KEY = 'riffroster.pushCrewNames';
 const COMPARE_USERS_KEY = 'riffroster.compareUsers';
+const ACTIVE_GROUP_KEY = 'riffroster.activeGroup';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -33,7 +36,8 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
   applyStoredNotificationPreferences();
-  $('#username').value = appState.username;
+  $('#login-name').value = appState.loginName;
+  $('#display-name').value = appState.username;
   registerServiceWorker();
   loadApp();
 });
@@ -41,6 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function bindEvents() {
   $('#login-form').addEventListener('submit', login);
   $('#event-select').addEventListener('change', changeEvent);
+  $('#group-select').addEventListener('change', changeGroup);
   $('#search-input').addEventListener('input', event => {
     appState.search = event.target.value.trim().toLowerCase();
     renderSchedule();
@@ -52,6 +57,8 @@ function bindEvents() {
   });
   $('#event-form').addEventListener('submit', createEvent);
   $('#performance-form').addEventListener('submit', createPerformance);
+  $('#create-group-form').addEventListener('submit', createGroup);
+  $('#join-group-form').addEventListener('submit', joinGroup);
   $('#poster-file').addEventListener('change', posterFileChanged);
   $('#poster-import-rows').addEventListener('input', posterRowChanged);
   $('#poster-import-rows').addEventListener('change', posterRowChanged);
@@ -85,14 +92,19 @@ function bindEvents() {
 async function login(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
-  const username = formData.get('username').trim();
+  const loginName = formData.get('loginName').trim();
+  const displayName = formData.get('displayName').trim();
+  const password = formData.get('password');
   const accessCode = formData.get('accessCode');
   $('#login-error').textContent = '';
   try {
-    const session = await api('/api/session', { method: 'POST', body: JSON.stringify({ username, accessCode }) });
+    const session = await api('/api/session', { method: 'POST', body: JSON.stringify({ loginName, displayName, password, accessCode }) });
     appState.username = session.user.username;
+    appState.loginName = loginName;
     appState.isAdmin = session.isAdmin;
     localStorage.setItem('riffroster.username', session.user.username);
+    localStorage.setItem('riffroster.loginName', loginName);
+    $('#account-password').value = '';
     $('#access-code').value = '';
     await loadApp();
   } catch (error) {
@@ -109,6 +121,7 @@ async function loadApp() {
     appState.activeEventId = appState.activeEventId && eventById(appState.activeEventId) ? appState.activeEventId : appState.data.events[0]?.id;
     const activeEvent = currentEvent();
     appState.activeDayId = activeEvent?.days.some(day => day.id === appState.activeDayId) ? appState.activeDayId : activeEvent?.days[0]?.id;
+    restoreActiveGroup();
     initializeCompareUsers();
     showApp();
     renderAll();
@@ -124,7 +137,8 @@ async function loadApp() {
 function showLogin() {
   $('#login-screen').hidden = false;
   $('#app').hidden = true;
-  $('#username').value = appState.username;
+  $('#login-name').value = appState.loginName;
+  $('#display-name').value = appState.username;
   window.scrollTo(0, 0);
 }
 
@@ -136,6 +150,7 @@ function showApp() {
 
 function renderAll() {
   renderHeader();
+  renderGroupContext();
   renderAdminState();
   renderDays();
   renderStageFilters();
@@ -155,7 +170,7 @@ function renderHeader() {
     ? `<strong>${escapeHtml(formatDateRange(activeEvent))}</strong> &nbsp;·&nbsp; ${escapeHtml(activeEvent.location)} &nbsp;·&nbsp; ${eventActCount} ${plural(eventActCount, 'act')}`
     : '';
 
-  const users = appState.data.users;
+  const users = contextUsers();
   $('#crew-stack').innerHTML = users.slice(0, 5).reverse().map(avatarHtml).join('');
   const me = userByName(appState.username);
   $('#profile-button').textContent = initials(appState.username);
@@ -276,6 +291,19 @@ function renderSchedule() {
     </div>`;
 }
 
+function renderGroupContext() {
+  const groups = appState.data.groups || [];
+  $('#group-select').innerHTML = [
+    `<option value="">Personal route</option>`,
+    ...groups.map(group => `<option value="${escapeHtml(group.id)}" ${group.id === appState.activeGroupId ? 'selected' : ''}>${escapeHtml(group.name)}</option>`)
+  ].join('');
+  const group = activeGroup();
+  $('#group-context').innerHTML = group
+    ? `<strong>${group.members.length} ${plural(group.members.length, 'member')}</strong><span>${group.members.map(member => escapeHtml(member.username)).join(' · ')}</span>`
+    : '<strong>Just you</strong><span>Create or join a group when you want to compare routes.</span>';
+  renderGroupMemberships();
+}
+
 function performanceHtml(performance, selected, clash, timelinePosition = null) {
   const attendees = usersForPerformance(performance.id);
   const otherCount = attendees.filter(user => !sameName(user.username, appState.username)).length;
@@ -371,7 +399,12 @@ function formatTimelineTime(epoch, offsetMinutes) {
 }
 
 function renderComparePicker() {
-  $('#people-picker').innerHTML = appState.data.users.map(user => `
+  const users = contextUsers();
+  if (!activeGroup()) {
+    $('#people-picker').innerHTML = `<div class="personal-compare-note"><b>Personal mode</b><span>Join or create a group to compare schedules with friends.</span><button class="button button--ghost button--compact" type="button" data-action="open-groups-modal">Manage groups</button></div>`;
+    return;
+  }
+  $('#people-picker').innerHTML = users.map(user => `
     <button class="person-chip ${appState.compareUsers.has(user.username) ? 'active' : ''} ${sameName(user.username, appState.username) ? 'current' : ''}" data-person="${escapeHtml(user.username)}" style="--person-color:${user.color}" aria-pressed="${appState.compareUsers.has(user.username)}">
       ${avatarHtml(user, true)} ${escapeHtml(user.username)}
     </button>`).join('');
@@ -461,6 +494,108 @@ async function createEvent(event) {
   } catch (error) { errorNode.textContent = error.message; }
 }
 
+async function createGroup(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorNode = $('.modal-error', form);
+  errorNode.textContent = '';
+  try {
+    const name = new FormData(form).get('name').trim();
+    const result = await api('/api/groups', { method: 'POST', body: JSON.stringify({ name }) });
+    appState.activeGroupId = result.group.id;
+    form.reset();
+    $('#new-group-code').textContent = result.joinCode;
+    $('#join-code-result').hidden = false;
+    await refreshAfterGroupChange();
+    toast(`${result.group.name} created`);
+  } catch (error) { errorNode.textContent = error.message; }
+}
+
+async function joinGroup(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorNode = $('.modal-error', form);
+  errorNode.textContent = '';
+  try {
+    const joinCode = new FormData(form).get('joinCode').trim();
+    const result = await api('/api/groups/join', { method: 'POST', body: JSON.stringify({ joinCode }) });
+    appState.activeGroupId = result.group.id;
+    form.reset();
+    await refreshAfterGroupChange();
+    toast(result.alreadyMember ? `${result.group.name} selected` : `Joined ${result.group.name}`);
+  } catch (error) { errorNode.textContent = error.message; }
+}
+
+async function leaveGroup(groupId) {
+  const group = appState.data.groups.find(item => item.id === groupId);
+  if (!group || !window.confirm(`Leave ${group.name}? Your personal picks will be kept.`)) return;
+  try {
+    await api(`/api/groups/${encodeURIComponent(groupId)}/leave`, { method: 'POST' });
+    if (appState.activeGroupId === groupId) appState.activeGroupId = null;
+    await refreshAfterGroupChange();
+    toast(`Left ${group.name}`);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function refreshAfterGroupChange() {
+  persistActiveGroup();
+  appState.data = await api('/api/state');
+  restoreActiveGroup();
+  initializeCompareUsers();
+  renderAll();
+}
+
+function renderGroupMemberships() {
+  const container = $('#group-memberships');
+  if (!container || !appState.data) return;
+  const groups = appState.data.groups || [];
+  container.innerHTML = groups.length ? groups.map(group => `
+    <article class="group-membership ${group.id === appState.activeGroupId ? 'active' : ''}">
+      <button type="button" class="group-membership-main" data-action="select-group" data-group-id="${escapeHtml(group.id)}">
+        <b>${escapeHtml(group.name)}</b>
+        <span>${group.members.length} ${plural(group.members.length, 'member')} · ${group.members.map(member => escapeHtml(member.username)).join(', ')}</span>
+      </button>
+      <div class="group-membership-actions">
+        ${group.isOwner ? `<button type="button" class="text-button" data-action="new-group-code" data-group-id="${escapeHtml(group.id)}">New join code</button>` : ''}
+        <button type="button" class="text-button" data-action="leave-group" data-group-id="${escapeHtml(group.id)}">Leave</button>
+      </div>
+    </article>`).join('') : '<div class="empty-compact">No groups yet. Your running order and personal route still work independently.</div>';
+}
+
+function openGroupsModal() {
+  $('#join-code-result').hidden = true;
+  $('#new-group-code').textContent = '';
+  $$('.modal-error', $('#groups-modal')).forEach(node => { node.textContent = ''; });
+  renderGroupMemberships();
+  $('#groups-modal').showModal();
+}
+
+async function copyGroupCode() {
+  const code = $('#new-group-code').textContent;
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    toast('Join code copied');
+  } catch { toast(`Join code: ${code}`); }
+}
+
+async function issueGroupCode(groupId) {
+  try {
+    const result = await api(`/api/groups/${encodeURIComponent(groupId)}/join-code`, { method: 'POST' });
+    $('#new-group-code').textContent = result.joinCode;
+    $('#join-code-result').hidden = false;
+    toast('New join code ready');
+  } catch (error) { toast(error.message, true); }
+}
+
+function selectGroup(groupId) {
+  appState.activeGroupId = groupId;
+  persistActiveGroup();
+  initializeCompareUsers();
+  renderAll();
+  $('#groups-modal').close();
+}
+
 async function createPerformance(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -511,6 +646,11 @@ function handleAction(action, node) {
   if (action === 'enable-notifications') enableNotifications();
   if (action === 'disable-notifications') disableNotifications();
   if (action === 'test-notification') sendTestNotification();
+  if (action === 'open-groups-modal') openGroupsModal();
+  if (action === 'copy-group-code') copyGroupCode();
+  if (action === 'select-group') selectGroup(node.dataset.groupId);
+  if (action === 'new-group-code') issueGroupCode(node.dataset.groupId);
+  if (action === 'leave-group') leaveGroup(node.dataset.groupId);
   if (action === 'close-modal') node.closest('dialog').close();
   if (action === 'view-schedule') changeView('schedule');
 }
@@ -552,26 +692,34 @@ function toggleCompareUser(username) {
   renderCompare();
 }
 
+function changeGroup(event) {
+  appState.activeGroupId = event.target.value || null;
+  persistActiveGroup();
+  initializeCompareUsers();
+  renderHeader();
+  renderGroupContext();
+  renderSchedule();
+  renderComparePicker();
+  renderCompare();
+}
+
 function initializeCompareUsers() {
+  const availableUsers = contextUsers();
   const storedUsers = readStoredCompareUsers();
   if (storedUsers) {
-    appState.compareUsers = new Set(appState.data.users
+    appState.compareUsers = new Set(availableUsers
       .filter(user => storedUsers.some(name => sameName(name, user.username)))
       .map(user => user.username));
     persistCompareUsers();
     return;
   }
 
-  appState.compareUsers = new Set([appState.username]);
-  appState.data.users
-    .filter(user => !sameName(user.username, appState.username))
-    .slice(0, 2)
-    .forEach(user => appState.compareUsers.add(user.username));
+  appState.compareUsers = new Set(availableUsers.map(user => user.username));
   persistCompareUsers();
 }
 
 function compareUsersStorageKey() {
-  return `${COMPARE_USERS_KEY}.${encodeURIComponent(appState.username.toLocaleLowerCase())}`;
+  return `${COMPARE_USERS_KEY}.${encodeURIComponent(appState.username.toLocaleLowerCase())}.${encodeURIComponent(appState.activeGroupId || 'personal')}`;
 }
 
 function readStoredCompareUsers() {
@@ -1596,10 +1744,23 @@ function focusPerformanceFromNotification() {
 function currentEvent() { return eventById(appState.activeEventId); }
 function eventById(id) { return appState.data?.events.find(event => event.id === id); }
 function currentDay() { return currentEvent()?.days.find(day => day.id === appState.activeDayId); }
+function activeGroup() { return appState.data?.groups?.find(group => group.id === appState.activeGroupId) || null; }
+function contextUsers() {
+  const group = activeGroup();
+  if (group) return group.members;
+  const me = userByName(appState.username);
+  return me ? [me] : [];
+}
 function userByName(name) { return appState.data?.users.find(user => sameName(user.username, name)); }
 function selectionsForUser(name) { return appState.data?.selections.filter(selection => sameName(selection.username, name)) || []; }
 function userHasPick(username, performanceId) { return appState.data.selections.some(selection => selection.performanceId === performanceId && sameName(selection.username, username)); }
-function usersForPerformance(id) { return appState.data.selections.filter(selection => selection.performanceId === id).map(selection => userByName(selection.username)).filter(Boolean); }
+function usersForPerformance(id) {
+  const visibleNames = new Set(contextUsers().map(user => user.username.toLocaleLowerCase()));
+  return appState.data.selections
+    .filter(selection => selection.performanceId === id && visibleNames.has(selection.username.toLocaleLowerCase()))
+    .map(selection => userByName(selection.username))
+    .filter(Boolean);
+}
 function stagesForEvent() { return [...new Set((currentEvent()?.days || []).flatMap(day => day.performances.map(performance => performance.stage)))]; }
 function sameName(a, b) { return a?.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0; }
 function byStart(a, b) { return new Date(a.startsAt) - new Date(b.startsAt); }
@@ -1661,6 +1822,25 @@ function initials(name) {
 
 function plural(count, word) { return count === 1 ? word : `${word}s`; }
 
+function activeGroupStorageKey() {
+  return `${ACTIVE_GROUP_KEY}.${encodeURIComponent(appState.username.toLocaleLowerCase())}`;
+}
+
+function restoreActiveGroup() {
+  let stored = null;
+  try { stored = localStorage.getItem(activeGroupStorageKey()); } catch { /* Personal mode remains available. */ }
+  const preferred = appState.activeGroupId || stored;
+  appState.activeGroupId = appState.data?.groups?.some(group => group.id === preferred) ? preferred : null;
+  persistActiveGroup();
+}
+
+function persistActiveGroup() {
+  try {
+    if (appState.activeGroupId) localStorage.setItem(activeGroupStorageKey(), appState.activeGroupId);
+    else localStorage.removeItem(activeGroupStorageKey());
+  } catch { /* The selected group can still work for this visit. */ }
+}
+
 async function signOut() {
   try {
     await disconnectPushForSignOut();
@@ -1670,9 +1850,10 @@ async function signOut() {
   } finally {
     appState.data = null;
     appState.isAdmin = false;
+    $('#account-password').value = '';
     $('#access-code').value = '';
     showLogin();
-    $('#access-code').focus();
+    $('#account-password').focus();
   }
 }
 
@@ -1728,8 +1909,9 @@ async function api(url, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     let message = data.message || `Request failed (${response.status})`;
-    if (response.status === 401) message = url === '/api/session' ? 'That access code is not valid.' : 'Your session has expired. Enter the access code again.';
+    if (response.status === 401 && url !== '/api/session') message = 'Your session has expired. Sign in again.';
     if (response.status === 403) message = 'Administrator access is required for that action.';
+    if (response.status === 429) message = 'Too many attempts. Wait a minute and try again.';
     const error = new Error(message);
     error.status = response.status;
     throw error;

@@ -3,10 +3,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using RiffRoster;
 using WebPush;
 
@@ -71,7 +73,9 @@ builder.Services
         {
             var currentSecurity = context.HttpContext.RequestServices.GetRequiredService<SecuritySettings>();
             var sessionStamp = context.Principal?.FindFirstValue("riffroster:security_stamp");
-            if (!string.Equals(sessionStamp, currentSecurity.SessionStamp, StringComparison.Ordinal))
+            var authenticationVersion = context.Principal?.FindFirstValue("riffroster:auth_version");
+            if (!string.Equals(sessionStamp, currentSecurity.SessionStamp, StringComparison.Ordinal) ||
+                !string.Equals(authenticationVersion, "2", StringComparison.Ordinal))
             {
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
@@ -80,10 +84,24 @@ builder.Services
     });
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Admin", policy => policy.RequireClaim(ClaimTypes.Role, "admin"));
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("account-actions", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 12,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 
 var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -94,18 +112,23 @@ api.MapGet("/health", (DataStore store, PushSettings settings) => Results.Ok(sto
 
 api.MapPost("/session", async (LoginRequest request, DataStore store, SecuritySettings settings, HttpContext context) =>
 {
-    var username = request.Username?.Trim();
-    if (string.IsNullOrWhiteSpace(username) || username.Length is < 2 or > 24)
-        return Results.BadRequest(new { message = "Use a username between 2 and 24 characters." });
-
     if (!settings.TryAuthorize(request.AccessCode, out var isAdmin))
-        return Results.Unauthorized();
+        return Results.Json(new { message = "Those login details are not valid." }, statusCode: StatusCodes.Status401Unauthorized);
 
-    var user = store.EnsureUser(username);
+    var validationMessage = AccountCredentials.Validate(request);
+    if (validationMessage is not null)
+        return Results.BadRequest(new { message = validationMessage });
+
+    var signIn = store.SignInOrRegister(request.LoginName!, request.DisplayName!, request.Password!);
+    if (!signIn.Succeeded)
+        return Results.Json(new { message = signIn.Message }, statusCode: signIn.StatusCode);
+
+    var user = signIn.User!;
     var claims = new List<Claim>
     {
         new(ClaimTypes.Name, user.Username),
         new(ClaimTypes.Role, isAdmin ? "admin" : "member"),
+        new("riffroster:auth_version", "2"),
         new("riffroster:security_stamp", settings.SessionStamp)
     };
     var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
@@ -114,8 +137,8 @@ api.MapPost("/session", async (LoginRequest request, DataStore store, SecuritySe
         new ClaimsPrincipal(identity),
         new AuthenticationProperties { IsPersistent = true, AllowRefresh = true });
 
-    return Results.Ok(new { user, isAdmin });
-}).AllowAnonymous();
+    return Results.Ok(new { user = DataStore.PublicUser(user), isAdmin, created = signIn.Created, claimed = signIn.Claimed });
+}).AllowAnonymous().RequireRateLimiting("account-actions");
 
 api.MapPost("/session/logout", async (HttpContext context) =>
 {
@@ -139,6 +162,42 @@ api.MapPost("/selections/toggle", (ToggleSelectionRequest request, HttpContext c
         ? Results.NotFound(new { message = "That performance no longer exists." })
         : Results.Ok(result);
 }).RequireAuthorization();
+
+api.MapPost("/groups", (CreateGroupRequest request, HttpContext context, DataStore store) =>
+{
+    var name = request.Name?.Trim();
+    if (string.IsNullOrWhiteSpace(name) || name.Length is < 2 or > 48)
+        return Results.BadRequest(new { message = "Use a group name between 2 and 48 characters." });
+
+    return Results.Ok(store.CreateGroup(context.User.Identity!.Name!, name));
+}).RequireAuthorization();
+
+api.MapPost("/groups/join", (JoinGroupRequest request, HttpContext context, DataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(request.JoinCode))
+        return Results.BadRequest(new { message = "Enter a group join code." });
+
+    var result = store.JoinGroup(context.User.Identity!.Name!, request.JoinCode);
+    return result is null
+        ? Results.NotFound(new { message = "That group join code is not valid." })
+        : Results.Ok(result);
+}).RequireAuthorization().RequireRateLimiting("account-actions");
+
+api.MapPost("/groups/{groupId}/leave", (string groupId, HttpContext context, DataStore store) =>
+{
+    var result = store.LeaveGroup(context.User.Identity!.Name!, groupId);
+    return result is null
+        ? Results.NotFound(new { message = "You are not a member of that group." })
+        : Results.Ok(result);
+}).RequireAuthorization();
+
+api.MapPost("/groups/{groupId}/join-code", (string groupId, HttpContext context, DataStore store) =>
+{
+    var result = store.RegenerateJoinCode(context.User.Identity!.Name!, groupId);
+    return result is null
+        ? Results.Forbid()
+        : Results.Ok(result);
+}).RequireAuthorization().RequireRateLimiting("account-actions");
 
 api.MapGet("/push/public-key", (PushSettings settings) =>
     settings.Enabled
@@ -257,8 +316,10 @@ app.Run();
 
 namespace RiffRoster
 {
-    public sealed record LoginRequest(string? Username, string? AccessCode);
+    public sealed record LoginRequest(string? LoginName, string? DisplayName, string? Password, string? AccessCode);
     public sealed record ToggleSelectionRequest(string PerformanceId);
+    public sealed record CreateGroupRequest(string? Name);
+    public sealed record JoinGroupRequest(string? JoinCode);
     public sealed record CreateEventRequest(string Name, string Location, DateOnly StartDate, DateOnly EndDate);
     public sealed record CreatePerformanceRequest(string Artist, string Stage, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
     public sealed record BulkCreatePerformancesRequest(List<CreatePerformanceRequest>? Performances);
@@ -309,17 +370,98 @@ namespace RiffRoster
         public List<UserSelection> Selections { get; set; } = [];
         public List<PushDevice> PushDevices { get; set; } = [];
         public List<ReminderDelivery> ReminderDeliveries { get; set; } = [];
+        public List<FestivalGroup> Groups { get; set; } = [];
+        public List<GroupMembership> GroupMemberships { get; set; } = [];
     }
 
     public sealed record FestivalEvent(string Id, string Name, string Location, DateOnly StartDate, DateOnly EndDate, List<FestivalDay> Days);
     public sealed record FestivalDay(string Id, DateOnly Date, string Label, List<Performance> Performances);
     public sealed record Performance(string Id, string Artist, string Stage, DateTimeOffset StartsAt, DateTimeOffset EndsAt);
-    public sealed record AppUser(string Username, string Color, DateTimeOffset JoinedAt);
+    public sealed class AppUser
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Color { get; set; } = string.Empty;
+        public DateTimeOffset JoinedAt { get; set; }
+        public string LoginName { get; set; } = string.Empty;
+        public string PasswordSalt { get; set; } = string.Empty;
+        public string PasswordHash { get; set; } = string.Empty;
+
+        [JsonIgnore]
+        public bool HasCredentials =>
+            !string.IsNullOrWhiteSpace(LoginName) &&
+            !string.IsNullOrWhiteSpace(PasswordSalt) &&
+            !string.IsNullOrWhiteSpace(PasswordHash);
+    }
     public sealed record UserSelection(string Username, string PerformanceId);
+    public sealed record FestivalGroup(
+        string Id,
+        string Name,
+        string CreatedBy,
+        string JoinCodeHash,
+        DateTimeOffset CreatedAt);
+    public sealed record GroupMembership(string GroupId, string Username, DateTimeOffset JoinedAt);
+    public sealed record AccountSignInResult(bool Succeeded, AppUser? User, bool Created, bool Claimed, string Message, int StatusCode);
+
+    public static class AccountCredentials
+    {
+        public static string? Validate(LoginRequest request)
+        {
+            var loginName = request.LoginName?.Trim();
+            var displayName = request.DisplayName?.Trim();
+            if (string.IsNullOrWhiteSpace(loginName) || loginName.Length is < 3 or > 32 ||
+                loginName.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-')))
+                return "Use a private login name of 3–32 letters, numbers, dots, dashes, or underscores.";
+            if (string.IsNullOrWhiteSpace(displayName) || displayName.Length is < 2 or > 32 ||
+                displayName.Any(char.IsControl))
+                return "Use a display name between 2 and 32 characters.";
+            if (string.IsNullOrEmpty(request.Password) || request.Password.Length is < 10 or > 128)
+                return "Use a password between 10 and 128 characters.";
+            return null;
+        }
+    }
+
+    public static class PasswordCredentials
+    {
+        private const int Iterations = 210_000;
+        private const int SaltBytes = 16;
+        private const int HashBytes = 32;
+
+        public static (string Salt, string Hash) Create(string password)
+        {
+            var salt = RandomNumberGenerator.GetBytes(SaltBytes);
+            var hash = Rfc2898DeriveBytes.Pbkdf2(
+                password,
+                salt,
+                Iterations,
+                HashAlgorithmName.SHA256,
+                HashBytes);
+            return (Convert.ToBase64String(salt), Convert.ToBase64String(hash));
+        }
+
+        public static bool Verify(string password, string saltValue, string hashValue)
+        {
+            try
+            {
+                var salt = Convert.FromBase64String(saltValue);
+                var expected = Convert.FromBase64String(hashValue);
+                var actual = Rfc2898DeriveBytes.Pbkdf2(
+                    password,
+                    salt,
+                    Iterations,
+                    HashAlgorithmName.SHA256,
+                    expected.Length);
+                return CryptographicOperations.FixedTimeEquals(actual, expected);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+    }
 
     public sealed partial class DataStore
     {
-        private const int CurrentDataVersion = 5;
+        private const int CurrentDataVersion = 6;
         private readonly object _gate = new();
         private readonly string _path;
         private readonly string _backupDirectory;
@@ -344,32 +486,98 @@ namespace RiffRoster
             _state = LoadOrSeed();
         }
 
-        public AppUser EnsureUser(string username)
+        public AccountSignInResult SignInOrRegister(string loginName, string displayName, string password)
         {
             lock (_gate)
             {
-                var existing = _state.Users.FirstOrDefault(user => user.Username.Equals(username, StringComparison.OrdinalIgnoreCase));
-                if (existing is not null) return existing;
+                loginName = loginName.Trim();
+                displayName = displayName.Trim();
+                var loginUser = _state.Users.FirstOrDefault(user =>
+                    user.HasCredentials && user.LoginName.Equals(loginName, StringComparison.OrdinalIgnoreCase));
+                if (loginUser is not null)
+                {
+                    if (!loginUser.Username.Equals(displayName, StringComparison.OrdinalIgnoreCase) ||
+                        !PasswordCredentials.Verify(password, loginUser.PasswordSalt, loginUser.PasswordHash))
+                        return FailedSignIn("Those login details are not valid.", StatusCodes.Status401Unauthorized);
 
-                var user = new AppUser(username, UserColor(username), DateTimeOffset.UtcNow);
+                    return new AccountSignInResult(true, loginUser, false, false, string.Empty, StatusCodes.Status200OK);
+                }
+
+                var displayUser = _state.Users.FirstOrDefault(user =>
+                    user.Username.Equals(displayName, StringComparison.OrdinalIgnoreCase));
+                if (displayUser is not null)
+                {
+                    if (displayUser.HasCredentials)
+                        return FailedSignIn("That private login name or display name is already in use.", StatusCodes.Status409Conflict);
+
+                    var claimedPassword = PasswordCredentials.Create(password);
+                    displayUser.LoginName = loginName;
+                    displayUser.PasswordSalt = claimedPassword.Salt;
+                    displayUser.PasswordHash = claimedPassword.Hash;
+                    Save();
+                    return new AccountSignInResult(true, displayUser, false, true, string.Empty, StatusCodes.Status200OK);
+                }
+
+                var passwordCredentials = PasswordCredentials.Create(password);
+                var user = new AppUser
+                {
+                    Username = displayName,
+                    Color = UserColor(displayName),
+                    JoinedAt = DateTimeOffset.UtcNow,
+                    LoginName = loginName,
+                    PasswordSalt = passwordCredentials.Salt,
+                    PasswordHash = passwordCredentials.Hash
+                };
                 _state.Users.Add(user);
                 Save();
-                return user;
+                return new AccountSignInResult(true, user, true, false, string.Empty, StatusCodes.Status200OK);
             }
         }
+
+        private static AccountSignInResult FailedSignIn(string message, int statusCode) =>
+            new(false, null, false, false, message, statusCode);
+
+        private AppUser UserByName(string username) =>
+            _state.Users.FirstOrDefault(user => user.Username.Equals(username, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("The signed-in account no longer exists.");
+
+        public static object PublicUser(AppUser user) => new
+        {
+            username = user.Username,
+            color = user.Color,
+            joinedAt = user.JoinedAt
+        };
 
         public object GetSnapshot(string username, bool isAdmin)
         {
             lock (_gate)
             {
-                var canonicalName = EnsureUser(username).Username;
+                var canonicalName = UserByName(username).Username;
+                var groupIds = _state.GroupMemberships
+                    .Where(membership => membership.Username.Equals(canonicalName, StringComparison.OrdinalIgnoreCase))
+                    .Select(membership => membership.GroupId)
+                    .ToHashSet(StringComparer.Ordinal);
+                var visibleUserNames = _state.GroupMemberships
+                    .Where(membership => groupIds.Contains(membership.GroupId))
+                    .Select(membership => membership.Username)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                visibleUserNames.Add(canonicalName);
+                var groups = _state.Groups
+                    .Where(group => groupIds.Contains(group.Id))
+                    .OrderBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => PublicGroup(group, canonicalName))
+                    .ToList();
                 return new
                 {
                     currentUser = canonicalName,
                     isAdmin,
                     events = _state.Events,
-                    users = _state.Users.OrderBy(user => user.JoinedAt),
-                    selections = _state.Selections
+                    users = _state.Users
+                        .Where(user => visibleUserNames.Contains(user.Username))
+                        .OrderBy(user => user.JoinedAt)
+                        .Select(PublicUser),
+                    selections = _state.Selections.Where(selection => visibleUserNames.Contains(selection.Username)),
+                    groups
                 };
             }
         }
@@ -396,7 +604,7 @@ namespace RiffRoster
                 var performanceExists = _state.Events.SelectMany(e => e.Days).SelectMany(d => d.Performances).Any(p => p.Id == performanceId);
                 if (!performanceExists) return null;
 
-                var user = EnsureUser(username);
+                var user = UserByName(username);
                 var existing = _state.Selections.FirstOrDefault(selection =>
                     selection.PerformanceId == performanceId && selection.Username.Equals(user.Username, StringComparison.OrdinalIgnoreCase));
                 var selected = existing is null;
@@ -411,6 +619,136 @@ namespace RiffRoster
                 Save();
                 return new { selected, performanceId, username = user.Username };
             }
+        }
+
+        public object CreateGroup(string username, string name)
+        {
+            lock (_gate)
+            {
+                var user = UserByName(username);
+                if (_state.GroupMemberships.Count(membership =>
+                        membership.Username.Equals(user.Username, StringComparison.OrdinalIgnoreCase)) >= 20)
+                    throw new InvalidOperationException("One account can belong to at most 20 groups.");
+
+                var joinCode = CreateJoinCode();
+                var group = new FestivalGroup(
+                    $"group-{Guid.NewGuid():N}",
+                    name,
+                    user.Username,
+                    HashJoinCode(joinCode),
+                    DateTimeOffset.UtcNow);
+                _state.Groups.Add(group);
+                _state.GroupMemberships.Add(new GroupMembership(group.Id, user.Username, DateTimeOffset.UtcNow));
+                Save();
+                return new { group = PublicGroup(group, user.Username), joinCode };
+            }
+        }
+
+        public object? JoinGroup(string username, string joinCode)
+        {
+            lock (_gate)
+            {
+                var user = UserByName(username);
+                if (_state.GroupMemberships.Count(membership =>
+                        membership.Username.Equals(user.Username, StringComparison.OrdinalIgnoreCase)) >= 20)
+                    throw new InvalidOperationException("One account can belong to at most 20 groups.");
+
+                var candidateHash = HashJoinCode(joinCode);
+                var group = _state.Groups.FirstOrDefault(item =>
+                    CryptographicOperations.FixedTimeEquals(
+                        Convert.FromHexString(item.JoinCodeHash),
+                        Convert.FromHexString(candidateHash)));
+                if (group is null) return null;
+
+                var exists = _state.GroupMemberships.Any(membership =>
+                    membership.GroupId == group.Id &&
+                    membership.Username.Equals(user.Username, StringComparison.OrdinalIgnoreCase));
+                if (!exists)
+                {
+                    _state.GroupMemberships.Add(new GroupMembership(group.Id, user.Username, DateTimeOffset.UtcNow));
+                    Save();
+                }
+
+                return new { group = PublicGroup(group, user.Username), alreadyMember = exists };
+            }
+        }
+
+        public object? LeaveGroup(string username, string groupId)
+        {
+            lock (_gate)
+            {
+                var user = UserByName(username);
+                var membership = _state.GroupMemberships.FirstOrDefault(item =>
+                    item.GroupId == groupId && item.Username.Equals(user.Username, StringComparison.OrdinalIgnoreCase));
+                if (membership is null) return null;
+
+                _state.GroupMemberships.Remove(membership);
+                var remaining = _state.GroupMemberships.Where(item => item.GroupId == groupId).ToList();
+                var group = _state.Groups.FirstOrDefault(item => item.Id == groupId);
+                if (group is not null && remaining.Count == 0)
+                    _state.Groups.Remove(group);
+                else if (group is not null && group.CreatedBy.Equals(user.Username, StringComparison.OrdinalIgnoreCase))
+                {
+                    var nextOwner = remaining.OrderBy(item => item.JoinedAt).First().Username;
+                    var index = _state.Groups.IndexOf(group);
+                    _state.Groups[index] = group with { CreatedBy = nextOwner };
+                }
+
+                Save();
+                return new { left = true, groupId };
+            }
+        }
+
+        public object? RegenerateJoinCode(string username, string groupId)
+        {
+            lock (_gate)
+            {
+                var user = UserByName(username);
+                var group = _state.Groups.FirstOrDefault(item => item.Id == groupId);
+                if (group is null || !group.CreatedBy.Equals(user.Username, StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                var joinCode = CreateJoinCode();
+                var index = _state.Groups.IndexOf(group);
+                _state.Groups[index] = group with { JoinCodeHash = HashJoinCode(joinCode) };
+                Save();
+                return new { groupId, joinCode };
+            }
+        }
+
+        private object PublicGroup(FestivalGroup group, string currentUsername)
+        {
+            var members = _state.GroupMemberships
+                .Where(membership => membership.GroupId == group.Id)
+                .OrderBy(membership => membership.JoinedAt)
+                .Select(membership => _state.Users.FirstOrDefault(user =>
+                    user.Username.Equals(membership.Username, StringComparison.OrdinalIgnoreCase)))
+                .Where(user => user is not null)
+                .Select(user => PublicUser(user!))
+                .ToList();
+            return new
+            {
+                group.Id,
+                group.Name,
+                createdBy = group.CreatedBy,
+                isOwner = group.CreatedBy.Equals(currentUsername, StringComparison.OrdinalIgnoreCase),
+                members
+            };
+        }
+
+        private static string CreateJoinCode()
+        {
+            const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            Span<byte> random = stackalloc byte[12];
+            RandomNumberGenerator.Fill(random);
+            var code = new string(random.ToArray().Select(value => alphabet[value % alphabet.Length]).ToArray());
+            return $"{code[..4]}-{code[4..8]}-{code[8..]}";
+        }
+
+        private static string HashJoinCode(string value)
+        {
+            var normalized = new string(value.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)));
         }
 
         public FestivalEvent CreateEvent(CreateEventRequest request)
@@ -626,6 +964,17 @@ namespace RiffRoster
 
                 loaded.DataVersion = 5;
                 _logger.LogInformation("Updated data to version 5; added {PerformanceCount} missing KAL performances.", added);
+            }
+
+            if (loaded.DataVersion < 6)
+            {
+                loaded.Groups ??= [];
+                loaded.GroupMemberships ??= [];
+                loaded.DataVersion = 6;
+                _logger.LogInformation(
+                    "Updated data to version 6; preserved {EventCount} running orders and prepared {UserCount} existing display names for account claiming.",
+                    loaded.Events.Count,
+                    loaded.Users.Count);
             }
 
             Save();

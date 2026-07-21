@@ -266,7 +266,7 @@ public sealed partial class DataStore
     {
         lock (_gate)
         {
-            var user = EnsureUser(username);
+            var user = UserByName(username);
             var index = _state.PushDevices.FindIndex(device =>
                 device.Endpoint.Equals(request.Endpoint, StringComparison.Ordinal));
             var now = DateTimeOffset.UtcNow;
@@ -374,7 +374,8 @@ public sealed partial class DataStore
 
                     var crewNames = _state.Selections
                         .Where(item => item.PerformanceId == performance.Id &&
-                                       !item.Username.Equals(device.Username, StringComparison.OrdinalIgnoreCase))
+                                       !item.Username.Equals(device.Username, StringComparison.OrdinalIgnoreCase) &&
+                                       SharesGroup(device.Username, item.Username))
                         .Select(item => item.Username)
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
@@ -422,6 +423,17 @@ public sealed partial class DataStore
             .ToHashSet(StringComparer.Ordinal);
         _state.ReminderDeliveries.RemoveAll(delivery =>
             delivery.PerformanceId == performanceId && deviceIds.Contains(delivery.PushDeviceId));
+    }
+
+    private bool SharesGroup(string firstUsername, string secondUsername)
+    {
+        var firstGroups = _state.GroupMemberships
+            .Where(membership => membership.Username.Equals(firstUsername, StringComparison.OrdinalIgnoreCase))
+            .Select(membership => membership.GroupId)
+            .ToHashSet(StringComparer.Ordinal);
+        return _state.GroupMemberships.Any(membership =>
+            firstGroups.Contains(membership.GroupId) &&
+            membership.Username.Equals(secondUsername, StringComparison.OrdinalIgnoreCase));
     }
 
     private bool RemovePushDeviceWithoutLock(string deviceId)

@@ -32,12 +32,16 @@
     <form class="login-card" id="login-form">
       <span class="login-step">PRIVATE CREW ACCESS</span>
       <h2>Who’s joining?</h2>
-      <p>Enter your username and the access code shared by your festival crew.</p>
-      <label for="username">Your username</label>
-      <input id="username" name="username" minlength="2" maxlength="24" autocomplete="nickname" placeholder="e.g. Arom" required autofocus>
+      <p>Sign in to an existing account, or create one on your first visit.</p>
+      <label for="login-name">Private login name</label>
+      <input id="login-name" name="loginName" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]+" autocomplete="username" placeholder="Only you will see this" required autofocus>
+      <label for="display-name">Display name</label>
+      <input id="display-name" name="displayName" minlength="2" maxlength="32" autocomplete="nickname" placeholder="e.g. Arom" required>
+      <label for="account-password">Password</label>
+      <input id="account-password" name="password" type="password" minlength="10" maxlength="128" autocomplete="current-password" placeholder="At least 10 characters" required>
       <label for="access-code">Access code</label>
-      <input id="access-code" name="accessCode" type="password" minlength="1" maxlength="128" autocomplete="current-password" placeholder="Crew invite code" required>
-      <p class="field-hint">Friends will see your username beside your picks. Only the code is private.</p>
+      <input id="access-code" name="accessCode" type="password" minlength="1" maxlength="128" autocomplete="one-time-code" placeholder="RiffRoster invite or admin code" required>
+      <p class="field-hint">Friends see only your display name. Your login name, password, and access code stay private.</p>
       <button class="button button--primary button--wide" type="submit">
         Enter the pit <span aria-hidden="true">→</span>
       </button>
@@ -75,6 +79,17 @@
         <button class="button button--ghost button--compact" data-action="open-event-modal" data-admin-only>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           New running order
+        </button>
+      </section>
+
+      <section class="group-strip" aria-label="Active group">
+        <div class="group-select-wrap">
+          <span class="eyebrow">YOUR CREW</span>
+          <select id="group-select" aria-label="Choose group view"></select>
+        </div>
+        <div class="group-context" id="group-context"></div>
+        <button class="button button--ghost button--compact" type="button" data-action="open-groups-modal">
+          Manage groups
         </button>
       </section>
 
@@ -299,6 +314,39 @@
       </div>
       <p class="modal-error" id="notification-error" role="alert"></p>
       <p class="notification-fine-print">Delivery is best effort and may be affected by connectivity, battery settings, or Focus/Do Not Disturb.</p>
+    </section>
+  </dialog>
+
+  <dialog id="groups-modal" class="groups-dialog">
+    <section class="modal-card groups-card" aria-labelledby="groups-heading">
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">Ă—</button>
+      <span class="eyebrow">YOUR CREWS</span>
+      <h2 id="groups-heading">Meet in the middle.</h2>
+      <p>Create a group and share its private join code, or enter a code from a friend. Your account starts in personal mode.</p>
+
+      <div class="group-memberships" id="group-memberships"></div>
+
+      <div class="group-forms">
+        <form id="create-group-form" class="group-form">
+          <b>Create a group</b>
+          <label>Group name<input name="name" minlength="2" maxlength="48" placeholder="e.g. Fortress crew" required></label>
+          <button class="button button--primary" type="submit">Create group</button>
+          <p class="modal-error" role="alert"></p>
+        </form>
+        <form id="join-group-form" class="group-form">
+          <b>Join a group</b>
+          <label>Join code<input name="joinCode" maxlength="32" autocomplete="off" placeholder="XXXX-XXXX-XXXX" required></label>
+          <button class="button button--ghost" type="submit">Join group</button>
+          <p class="modal-error" role="alert"></p>
+        </form>
+      </div>
+
+      <div class="join-code-result" id="join-code-result" hidden>
+        <span>SHARE THIS JOIN CODE</span>
+        <b id="new-group-code"></b>
+        <button class="button button--ghost button--compact" type="button" data-action="copy-group-code">Copy code</button>
+        <small>The code is shown here after creation so you can send it to your friends.</small>
+      </div>
     </section>
   </dialog>
 

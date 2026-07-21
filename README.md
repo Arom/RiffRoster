@@ -1,6 +1,6 @@
 # RiffRoster
 
-RiffRoster is a lightweight group clashfinder built with ASP.NET Core and plain browser JavaScript. Friends sign in with a shared access code, star the acts they want to see, and compare their routes.
+RiffRoster is a lightweight group clashfinder built with ASP.NET Core and plain browser JavaScript. Friends use individual accounts plus a shared site access code, star the acts they want to see, and compare routes inside groups they create or join.
 
 ## Run locally
 
@@ -42,7 +42,7 @@ RIFFROSTER_VAPID_PRIVATE_KEY=<generated private Web Push key>
 RIFFROSTER_VAPID_SUBJECT=https://your-riffroster-domain.example/
 ```
 
-Use a password manager to generate both codes. Share only `RIFFROSTER_INVITE_CODE` with friends. Anyone using `RIFFROSTER_ADMIN_CODE` can add running orders and performances. Changing either code invalidates existing sessions.
+Use a password manager to generate both codes. Share only `RIFFROSTER_INVITE_CODE` with friends. Each person also chooses a private login name and password; only their separate display name appears to other users. Anyone using `RIFFROSTER_ADMIN_CODE` can add running orders and performances. Changing either code invalidates existing sessions.
 
 Generate the Web Push keys once, then copy the two values into Railway without committing them:
 
@@ -58,7 +58,7 @@ Railway should detect the Dockerfile automatically. Its deployment health check 
 
 Everything under `/data` lives on the Railway volume:
 
-- `store.json` contains users, events, selections, performances, browser push subscriptions, and reminder delivery records.
+- `store.json` contains account hashes, groups, users, events, selections, performances, browser push subscriptions, and reminder delivery records.
 - `backups/` retains up to 14 daily JSON snapshots.
 - `keys/` keeps session-encryption keys across deployments.
 
@@ -68,11 +68,14 @@ Do not scale the service beyond one replica while using the JSON store. If the a
 
 ## Security model
 
+- Passwords are salted and hashed with PBKDF2-SHA256; plaintext passwords are never stored.
+- Login and group-code attempts are rate limited per client address.
 - Sessions use signed, HttpOnly, SameSite cookies.
-- API requests derive the username from the signed session, so clients cannot select bands as another user.
+- API requests derive the display identity from the signed session, so clients cannot select bands as another user.
+- Private login names and password hashes are never included in browser-facing state.
 - Only administrator sessions can create running orders or add performances.
 - Production refuses to start without two different access codes of at least 16 characters.
-- The site is still intended for a small private group; access codes are shared secrets, not individual accounts.
+- The site is still intended for a small private audience; it does not yet include email recovery, multifactor authentication, or an external identity provider.
 
 ## Included features
 
@@ -80,6 +83,7 @@ Do not scale the service beyond one replica while using the JSON store. If the a
 - Multiple running orders and administrator editing
 - Browser-only poster OCR with a side-by-side image and editable import review; poster files are never uploaded or stored
 - Per-user band picks and visible friend attendance
+- Personal mode for users who are not in a group, plus multi-group creation, join codes, switching, and leaving
 - Time-scaled Running order and My route views that make overlaps visible across stage lanes
 - Crew comparison with full-group matches, shared picks, and solo detours
 - Schedule search and stage filters
