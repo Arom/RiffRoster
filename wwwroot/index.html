@@ -59,6 +59,9 @@
         <button class="icon-button" data-action="open-event-modal" data-admin-only title="New running order" aria-label="New running order">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         </button>
+        <button class="icon-button icon-button--danger" data-action="open-delete-event-modal" data-admin-only title="Delete selected festival" aria-label="Delete selected festival">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg>
+        </button>
         <button class="icon-button notification-button" data-action="open-notification-modal" title="Concert reminders" aria-label="Concert reminder settings">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
           <span class="notification-indicator" id="notification-indicator" aria-hidden="true"></span>
@@ -76,9 +79,13 @@
           <select id="event-select" aria-label="Choose running order"></select>
         </div>
         <div class="event-meta" id="event-meta"></div>
-        <button class="button button--ghost button--compact" data-action="open-event-modal" data-admin-only>
+        <button class="button button--ghost button--compact" data-action="open-event-modal" data-admin-only title="New running order" aria-label="New running order">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           New running order
+        </button>
+        <button class="button button--danger button--compact" data-action="open-delete-event-modal" data-admin-only title="Delete selected festival" aria-label="Delete selected festival">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>
+          Delete festival
         </button>
       </section>
 
@@ -191,6 +198,21 @@
       </div>
       <p class="modal-error" role="alert"></p>
       <button class="button button--primary button--wide" value="default">Create running order</button>
+    </form>
+  </dialog>
+
+  <dialog id="delete-event-modal">
+    <form class="modal-card" id="delete-event-form">
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">Ă—</button>
+      <span class="eyebrow eyebrow--danger">ADMIN FESTIVAL MANAGEMENT</span>
+      <h2>Delete <span id="delete-event-name">this festival</span>?</h2>
+      <p>This permanently removes the running order, every act, and everyoneâ€™s picks for this festival. Accounts and groups are not affected.</p>
+      <p class="delete-event-summary" id="delete-event-summary"></p>
+      <p class="modal-error" role="alert"></p>
+      <div class="modal-actions">
+        <button class="button button--ghost" type="button" data-action="close-modal">Keep festival</button>
+        <button class="button button--danger" type="submit">Delete festival</button>
+      </div>
     </form>
   </dialog>
 

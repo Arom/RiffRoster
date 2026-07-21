@@ -56,6 +56,7 @@ function bindEvents() {
     renderCompare();
   });
   $('#event-form').addEventListener('submit', createEvent);
+  $('#delete-event-form').addEventListener('submit', deleteEvent);
   $('#performance-form').addEventListener('submit', createPerformance);
   $('#create-group-form').addEventListener('submit', createGroup);
   $('#join-group-form').addEventListener('submit', joinGroup);
@@ -118,7 +119,10 @@ async function loadApp() {
     appState.username = appState.data.currentUser;
     appState.isAdmin = appState.data.isAdmin;
     localStorage.setItem('riffroster.username', appState.username);
-    appState.activeEventId = appState.activeEventId && eventById(appState.activeEventId) ? appState.activeEventId : appState.data.events[0]?.id;
+    const preferredEventId = appState.data.lastSelectedEventId;
+    appState.activeEventId = preferredEventId && eventById(preferredEventId)
+      ? preferredEventId
+      : appState.data.events[0]?.id || null;
     const activeEvent = currentEvent();
     appState.activeDayId = activeEvent?.days.some(day => day.id === appState.activeDayId) ? appState.activeDayId : activeEvent?.days[0]?.id;
     restoreActiveGroup();
@@ -490,8 +494,44 @@ async function createEvent(event) {
     form.closest('dialog').close();
     form.reset();
     renderAll();
+    persistLastSelectedEvent().catch(error => toast(`Festival created, but your selection could not be saved: ${error.message}`, true));
     toast(`${created.name} is ready`);
   } catch (error) { errorNode.textContent = error.message; }
+}
+
+function openDeleteEventModal() {
+  if (!appState.isAdmin) return toast('Administrator access is required', true);
+  const festivalEvent = currentEvent();
+  if (!festivalEvent) return toast('There is no festival to delete', true);
+
+  const performanceCount = festivalEvent.days.reduce((total, day) => total + day.performances.length, 0);
+  $('#delete-event-name').textContent = festivalEvent.name;
+  $('#delete-event-summary').textContent = `${performanceCount} ${plural(performanceCount, 'act')} and every pick linked to them will be removed.`;
+  $('.modal-error', $('#delete-event-form')).textContent = '';
+  $('#delete-event-modal').showModal();
+}
+
+async function deleteEvent(event) {
+  event.preventDefault();
+  if (!appState.isAdmin) return toast('Administrator access is required', true);
+  const festivalEvent = currentEvent();
+  if (!festivalEvent) return;
+
+  const form = event.currentTarget;
+  const submitButton = $('button[type="submit"]', form);
+  const errorNode = $('.modal-error', form);
+  errorNode.textContent = '';
+  submitButton.disabled = true;
+  try {
+    const result = await api(`/api/events/${encodeURIComponent(festivalEvent.id)}`, { method: 'DELETE' });
+    $('#delete-event-modal').close();
+    await loadApp();
+    toast(`${result.deletedEventName} deleted`);
+  } catch (error) {
+    errorNode.textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+  }
 }
 
 async function createGroup(event) {
@@ -635,6 +675,7 @@ function handleAction(action, node) {
   if (action === 'toggle-attendee-names') toggleAttendeeNames(node);
   if (action === 'sign-out') signOut();
   if (action === 'open-event-modal') openEventModal();
+  if (action === 'open-delete-event-modal') openDeleteEventModal();
   if (action === 'open-performance-modal') openPerformanceModal();
   if (action === 'open-poster-import') openPosterImport();
   if (action === 'close-poster-import') $('#poster-import-modal').close();
@@ -670,11 +711,25 @@ function updateViewVisibility() {
   $$('[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === appState.activeView));
 }
 
-function changeEvent(event) {
+async function changeEvent(event) {
   appState.activeEventId = event.target.value;
   appState.activeDayId = currentEvent()?.days[0]?.id;
   appState.visibleStages.clear();
   renderAll();
+  try {
+    await persistLastSelectedEvent();
+  } catch (error) {
+    toast(`Could not save your festival selection: ${error.message}`, true);
+  }
+}
+
+async function persistLastSelectedEvent() {
+  if (!appState.activeEventId) return;
+  const result = await api('/api/account/last-event', {
+    method: 'PUT',
+    body: JSON.stringify({ eventId: appState.activeEventId })
+  });
+  if (appState.data) appState.data.lastSelectedEventId = result.eventId;
 }
 
 function toggleStage(stage) {

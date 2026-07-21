@@ -163,6 +163,16 @@ api.MapPost("/selections/toggle", (ToggleSelectionRequest request, HttpContext c
         : Results.Ok(result);
 }).RequireAuthorization();
 
+api.MapPut("/account/last-event", (SetLastSelectedEventRequest request, HttpContext context, DataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(request.EventId))
+        return Results.BadRequest(new { message = "A festival is required." });
+
+    return store.SetLastSelectedEvent(context.User.Identity!.Name!, request.EventId)
+        ? Results.Ok(new { eventId = request.EventId })
+        : Results.NotFound(new { message = "That festival no longer exists." });
+}).RequireAuthorization();
+
 api.MapPost("/groups", (CreateGroupRequest request, HttpContext context, DataStore store) =>
 {
     var name = request.Name?.Trim();
@@ -288,6 +298,14 @@ api.MapPost("/events/{eventId}/performances", (string eventId, CreatePerformance
         : Results.Ok(performance);
 }).RequireAuthorization("Admin");
 
+api.MapDelete("/events/{eventId}", (string eventId, DataStore store) =>
+{
+    var result = store.DeleteEvent(eventId);
+    return result is null
+        ? Results.NotFound(new { message = "That festival no longer exists." })
+        : Results.Ok(result);
+}).RequireAuthorization("Admin");
+
 api.MapPost("/events/{eventId}/performances/bulk", (string eventId, BulkCreatePerformancesRequest request, DataStore store) =>
 {
     if (request.Performances is null || request.Performances.Count is < 1 or > 500)
@@ -318,6 +336,7 @@ namespace RiffRoster
 {
     public sealed record LoginRequest(string? LoginName, string? DisplayName, string? Password, string? AccessCode);
     public sealed record ToggleSelectionRequest(string PerformanceId);
+    public sealed record SetLastSelectedEventRequest(string? EventId);
     public sealed record CreateGroupRequest(string? Name);
     public sealed record JoinGroupRequest(string? JoinCode);
     public sealed record CreateEventRequest(string Name, string Location, DateOnly StartDate, DateOnly EndDate);
@@ -385,6 +404,7 @@ namespace RiffRoster
         public string LoginName { get; set; } = string.Empty;
         public string PasswordSalt { get; set; } = string.Empty;
         public string PasswordHash { get; set; } = string.Empty;
+        public string? LastSelectedEventId { get; set; }
 
         [JsonIgnore]
         public bool HasCredentials =>
@@ -461,7 +481,7 @@ namespace RiffRoster
 
     public sealed partial class DataStore
     {
-        private const int CurrentDataVersion = 6;
+        private const int CurrentDataVersion = 7;
         private readonly object _gate = new();
         private readonly string _path;
         private readonly string _backupDirectory;
@@ -526,7 +546,8 @@ namespace RiffRoster
                     JoinedAt = DateTimeOffset.UtcNow,
                     LoginName = loginName,
                     PasswordSalt = passwordCredentials.Salt,
-                    PasswordHash = passwordCredentials.Hash
+                    PasswordHash = passwordCredentials.Hash,
+                    LastSelectedEventId = _state.Events.FirstOrDefault()?.Id
                 };
                 _state.Users.Add(user);
                 Save();
@@ -552,7 +573,8 @@ namespace RiffRoster
         {
             lock (_gate)
             {
-                var canonicalName = UserByName(username).Username;
+                var currentUser = UserByName(username);
+                var canonicalName = currentUser.Username;
                 var groupIds = _state.GroupMemberships
                     .Where(membership => membership.Username.Equals(canonicalName, StringComparison.OrdinalIgnoreCase))
                     .Select(membership => membership.GroupId)
@@ -571,6 +593,7 @@ namespace RiffRoster
                 {
                     currentUser = canonicalName,
                     isAdmin,
+                    lastSelectedEventId = currentUser.LastSelectedEventId,
                     events = _state.Events,
                     users = _state.Users
                         .Where(user => visibleUserNames.Contains(user.Username))
@@ -618,6 +641,21 @@ namespace RiffRoster
 
                 Save();
                 return new { selected, performanceId, username = user.Username };
+            }
+        }
+
+        public bool SetLastSelectedEvent(string username, string eventId)
+        {
+            lock (_gate)
+            {
+                if (!_state.Events.Any(item => item.Id == eventId)) return false;
+
+                var user = UserByName(username);
+                if (user.LastSelectedEventId == eventId) return true;
+
+                user.LastSelectedEventId = eventId;
+                Save();
+                return true;
             }
         }
 
@@ -785,6 +823,40 @@ namespace RiffRoster
                 day.Performances.Sort((a, b) => a.StartsAt.CompareTo(b.StartsAt));
                 Save();
                 return performance;
+            }
+        }
+
+        public object? DeleteEvent(string eventId)
+        {
+            lock (_gate)
+            {
+                var eventIndex = _state.Events.FindIndex(item => item.Id == eventId);
+                if (eventIndex < 0) return null;
+
+                var festivalEvent = _state.Events[eventIndex];
+                var performanceIds = festivalEvent.Days
+                    .SelectMany(day => day.Performances)
+                    .Select(performance => performance.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+                var removedSelections = _state.Selections.RemoveAll(selection => performanceIds.Contains(selection.PerformanceId));
+                _state.ReminderDeliveries.RemoveAll(delivery => performanceIds.Contains(delivery.PerformanceId));
+                _state.Events.RemoveAt(eventIndex);
+
+                var nextEventId = _state.Events.Count == 0
+                    ? null
+                    : _state.Events[Math.Min(eventIndex, _state.Events.Count - 1)].Id;
+                foreach (var user in _state.Users.Where(user => user.LastSelectedEventId == eventId))
+                    user.LastSelectedEventId = nextEventId;
+
+                Save();
+                return new
+                {
+                    deletedEventId = festivalEvent.Id,
+                    deletedEventName = festivalEvent.Name,
+                    removedPerformances = performanceIds.Count,
+                    removedSelections,
+                    nextEventId
+                };
             }
         }
 
@@ -975,6 +1047,16 @@ namespace RiffRoster
                     "Updated data to version 6; preserved {EventCount} running orders and prepared {UserCount} existing display names for account claiming.",
                     loaded.Events.Count,
                     loaded.Users.Count);
+            }
+
+            if (loaded.DataVersion < 7)
+            {
+                var defaultEventId = loaded.Events.FirstOrDefault()?.Id;
+                foreach (var user in loaded.Users.Where(user => string.IsNullOrWhiteSpace(user.LastSelectedEventId)))
+                    user.LastSelectedEventId = defaultEventId;
+
+                loaded.DataVersion = 7;
+                _logger.LogInformation("Updated data to version 7; enabled per-account festival selection.");
             }
 
             Save();
