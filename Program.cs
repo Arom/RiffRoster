@@ -306,6 +306,27 @@ api.MapDelete("/events/{eventId}", (string eventId, DataStore store) =>
         : Results.Ok(result);
 }).RequireAuthorization("Admin");
 
+api.MapPut("/events/{eventId}/performances/{performanceId}", (string eventId, string performanceId, CreatePerformanceRequest request, DataStore store) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Artist) || string.IsNullOrWhiteSpace(request.Stage))
+        return Results.BadRequest(new { message = "Artist and stage are required." });
+    if (request.EndsAt <= request.StartsAt)
+        return Results.BadRequest(new { message = "The end time must be after the start time." });
+
+    var performance = store.UpdatePerformance(eventId, performanceId, request);
+    return performance is null
+        ? Results.NotFound(new { message = "Running order or act not found, or the performance falls outside the festival dates." })
+        : Results.Ok(performance);
+}).RequireAuthorization("Admin");
+
+api.MapDelete("/events/{eventId}/performances/{performanceId}", (string eventId, string performanceId, DataStore store) =>
+{
+    var result = store.DeletePerformance(eventId, performanceId);
+    return result is null
+        ? Results.NotFound(new { message = "That act no longer exists." })
+        : Results.Ok(result);
+}).RequireAuthorization("Admin");
+
 api.MapPost("/events/{eventId}/performances/bulk", (string eventId, BulkCreatePerformancesRequest request, DataStore store) =>
 {
     if (request.Performances is null || request.Performances.Count is < 1 or > 500)
@@ -856,6 +877,64 @@ namespace RiffRoster
                     removedPerformances = performanceIds.Count,
                     removedSelections,
                     nextEventId
+                };
+            }
+        }
+
+        public Performance? UpdatePerformance(string eventId, string performanceId, CreatePerformanceRequest request)
+        {
+            lock (_gate)
+            {
+                var festivalEvent = _state.Events.FirstOrDefault(item => item.Id == eventId);
+                if (festivalEvent is null) return null;
+
+                var sourceDay = festivalEvent.Days.FirstOrDefault(day => day.Performances.Any(item => item.Id == performanceId));
+                var existing = sourceDay?.Performances.FirstOrDefault(item => item.Id == performanceId);
+                if (sourceDay is null || existing is null) return null;
+
+                var localDateTime = request.StartsAt.DateTime;
+                var localDate = DateOnly.FromDateTime(localDateTime);
+                var scheduleDate = localDateTime.TimeOfDay < TimeSpan.FromHours(6) ? localDate.AddDays(-1) : localDate;
+                var targetDay = festivalEvent.Days.FirstOrDefault(item => item.Date == scheduleDate);
+                if (targetDay is null) return null;
+
+                var updated = existing with
+                {
+                    Artist = request.Artist.Trim(),
+                    Stage = request.Stage.Trim(),
+                    StartsAt = request.StartsAt,
+                    EndsAt = request.EndsAt
+                };
+                sourceDay.Performances.Remove(existing);
+                targetDay.Performances.Add(updated);
+                sourceDay.Performances.Sort((left, right) => left.StartsAt.CompareTo(right.StartsAt));
+                if (!ReferenceEquals(sourceDay, targetDay))
+                    targetDay.Performances.Sort((left, right) => left.StartsAt.CompareTo(right.StartsAt));
+
+                _state.ReminderDeliveries.RemoveAll(delivery => delivery.PerformanceId == performanceId);
+                Save();
+                return updated;
+            }
+        }
+
+        public object? DeletePerformance(string eventId, string performanceId)
+        {
+            lock (_gate)
+            {
+                var festivalEvent = _state.Events.FirstOrDefault(item => item.Id == eventId);
+                var day = festivalEvent?.Days.FirstOrDefault(item => item.Performances.Any(performance => performance.Id == performanceId));
+                var performance = day?.Performances.FirstOrDefault(item => item.Id == performanceId);
+                if (day is null || performance is null) return null;
+
+                day.Performances.Remove(performance);
+                var removedSelections = _state.Selections.RemoveAll(selection => selection.PerformanceId == performanceId);
+                _state.ReminderDeliveries.RemoveAll(delivery => delivery.PerformanceId == performanceId);
+                Save();
+                return new
+                {
+                    deletedPerformanceId = performance.Id,
+                    deletedArtist = performance.Artist,
+                    removedSelections
                 };
             }
         }

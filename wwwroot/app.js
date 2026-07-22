@@ -325,11 +325,16 @@ function performanceHtml(performance, selected, clash, timelinePosition = null) 
   else if (selected) attendanceText = 'Only you — so far';
   else if (attendees.length) attendanceText = `${attendees.length} friend${attendees.length === 1 ? '' : 's'} going`;
 
+  const adminEditButton = appState.isAdmin ? `<button class="performance-admin-button" data-action="open-edit-performance" data-id="${escapeHtml(performance.id)}" aria-label="Edit ${escapeHtml(performance.artist)}" title="Edit act">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-1 5 5-1L19 9l-4-4L4 16Zm9-9 4 4"/></svg>
+  </button>` : '';
+
   const timelineClass = timelinePosition ? `timeline-performance ${timelinePosition.compact ? 'performance--compact' : ''}` : '';
   const timelineStyle = timelinePosition ? ` style="top:${timelinePosition.top}px;height:${timelinePosition.height}px"` : '';
   return `<article class="performance ${timelineClass} ${selected ? 'selected' : ''} ${isShared ? 'shared' : ''} ${clash ? 'clash' : ''}" data-performance-id="${performance.id}" title="${escapeHtml(performance.artist)} · ${formatTime(performance.startsAt)}–${end}"${timelineStyle}>
     <div class="performance-time">${formatTime(performance.startsAt)} <span>→ ${end}</span></div>
     <h4>${escapeHtml(performance.artist)}</h4>
+    ${adminEditButton}
     <button class="pick-button" data-action="toggle-pick" data-id="${performance.id}" aria-label="${selected ? 'Remove' : 'Add'} ${escapeHtml(performance.artist)} ${selected ? 'from' : 'to'} your route" aria-pressed="${selected}">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>
     </button>
@@ -648,25 +653,52 @@ async function createPerformance(event) {
     startsAt: localDateTimeToOffsetIso(formData.startsAt),
     endsAt: localDateTimeToOffsetIso(formData.endsAt)
   };
+  const performanceId = formData.performanceId?.trim();
   try {
-    const created = await api(`/api/events/${encodeURIComponent(appState.activeEventId)}/performances`, { method: 'POST', body: JSON.stringify(payload) });
-    const createdDate = created.startsAt.slice(0, 10);
-    const createdHour = Number(created.startsAt.slice(11, 13));
-    const scheduleDate = createdHour < 6
-      ? localDateString(new Date(`${createdDate}T12:00:00`).setDate(new Date(`${createdDate}T12:00:00`).getDate() - 1))
-      : createdDate;
+    const endpoint = performanceId
+      ? `/api/events/${encodeURIComponent(appState.activeEventId)}/performances/${encodeURIComponent(performanceId)}`
+      : `/api/events/${encodeURIComponent(appState.activeEventId)}/performances`;
+    const saved = await api(endpoint, { method: performanceId ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+    if (performanceId) {
+      for (const day of currentEvent().days)
+        day.performances = day.performances.filter(performance => performance.id !== performanceId);
+    }
+
+    const scheduleDate = scheduleDateForPerformance(saved);
     const targetDay = currentEvent().days.find(day => day.date === scheduleDate);
     if (targetDay) {
-      targetDay.performances.push(created);
+      targetDay.performances.push(saved);
       targetDay.performances.sort(byStart);
       appState.activeDayId = targetDay.id;
+      appState.visibleStages.clear();
     } else {
       await loadApp();
     }
     form.closest('dialog').close();
     form.reset();
     renderAll();
-    toast(`${created.artist} added`);
+    toast(`${saved.artist} ${performanceId ? 'updated' : 'added'}`);
+  } catch (error) { errorNode.textContent = error.message; }
+}
+
+async function deletePerformance() {
+  if (!appState.isAdmin) return toast('Administrator access is required', true);
+  const form = $('#performance-form');
+  const performanceId = form.elements.performanceId.value;
+  const performance = performanceById(performanceId);
+  if (!performance || !window.confirm(`Delete ${performance.artist}? Everyone's pick for this act will also be removed.`)) return;
+
+  const errorNode = $('.modal-error', form);
+  errorNode.textContent = '';
+  try {
+    const result = await api(`/api/events/${encodeURIComponent(appState.activeEventId)}/performances/${encodeURIComponent(performanceId)}`, { method: 'DELETE' });
+    for (const day of currentEvent().days)
+      day.performances = day.performances.filter(item => item.id !== performanceId);
+    appState.data.selections = appState.data.selections.filter(selection => selection.performanceId !== performanceId);
+    $('#performance-modal').close();
+    form.reset();
+    renderAll();
+    toast(`${result.deletedArtist} deleted`);
   } catch (error) { errorNode.textContent = error.message; }
 }
 
@@ -677,6 +709,8 @@ function handleAction(action, node) {
   if (action === 'open-event-modal') openEventModal();
   if (action === 'open-delete-event-modal') openDeleteEventModal();
   if (action === 'open-performance-modal') openPerformanceModal();
+  if (action === 'open-edit-performance') openPerformanceModal(node.dataset.id);
+  if (action === 'delete-performance') deletePerformance();
   if (action === 'open-poster-import') openPosterImport();
   if (action === 'close-poster-import') $('#poster-import-modal').close();
   if (action === 'start-poster-ocr') startPosterOcr();
@@ -828,16 +862,27 @@ function openEventModal() {
   $('#event-modal').showModal();
 }
 
-function openPerformanceModal() {
+function openPerformanceModal(performanceId = null) {
   if (!appState.isAdmin) return toast('Administrator access is required', true);
   const activeEvent = currentEvent();
   if (!activeEvent) return;
   const form = $('#performance-form');
-  const day = currentDay() || activeEvent.days[0];
+  form.reset();
+  const performance = performanceId ? performanceById(performanceId) : null;
+  const day = performance
+    ? activeEvent.days.find(item => item.performances.some(candidate => candidate.id === performanceId))
+    : currentDay() || activeEvent.days[0];
   const baseDate = day?.date || activeEvent.startDate;
   $('#performance-event-label').textContent = `${activeEvent.name} · ${day?.label || ''}`;
-  form.elements.startsAt.value = `${baseDate}T12:00`;
-  form.elements.endsAt.value = `${baseDate}T12:45`;
+  form.elements.performanceId.value = performance?.id || '';
+  form.elements.artist.value = performance?.artist || '';
+  form.elements.stage.value = performance?.stage || '';
+  form.elements.startsAt.value = performance ? performance.startsAt.slice(0, 16) : `${baseDate}T12:00`;
+  form.elements.endsAt.value = performance ? performance.endsAt.slice(0, 16) : `${baseDate}T12:45`;
+  $('#performance-modal-kicker').textContent = performance ? 'ADMIN ACT MANAGEMENT' : 'ADD TO SCHEDULE';
+  $('#performance-modal-title').textContent = performance ? `Edit ${performance.artist}.` : 'Add an act.';
+  $('#performance-submit').textContent = performance ? 'Save changes' : 'Add to running order';
+  $('#performance-delete').hidden = !performance;
   $('.modal-error', form).textContent = '';
   $('#performance-modal').showModal();
 }
@@ -1806,6 +1851,7 @@ function contextUsers() {
   const me = userByName(appState.username);
   return me ? [me] : [];
 }
+function performanceById(id) { return currentEvent()?.days.flatMap(day => day.performances).find(performance => performance.id === id); }
 function userByName(name) { return appState.data?.users.find(user => sameName(user.username, name)); }
 function selectionsForUser(name) { return appState.data?.selections.filter(selection => sameName(selection.username, name)) || []; }
 function userHasPick(username, performanceId) { return appState.data.selections.some(selection => selection.performanceId === performanceId && sameName(selection.username, username)); }
@@ -1819,6 +1865,14 @@ function usersForPerformance(id) {
 function stagesForEvent() { return [...new Set((currentEvent()?.days || []).flatMap(day => day.performances.map(performance => performance.stage)))]; }
 function sameName(a, b) { return a?.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0; }
 function byStart(a, b) { return new Date(a.startsAt) - new Date(b.startsAt); }
+
+function scheduleDateForPerformance(performance) {
+  const date = performance.startsAt.slice(0, 10);
+  if (Number(performance.startsAt.slice(11, 13)) >= 6) return date;
+  const previousDay = new Date(`${date}T12:00:00`);
+  previousDay.setDate(previousDay.getDate() - 1);
+  return localDateString(previousDay);
+}
 
 function findConflicts(performances) {
   const sorted = [...performances].sort(byStart);
