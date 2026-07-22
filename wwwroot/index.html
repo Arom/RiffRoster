@@ -180,10 +180,11 @@
   </dialog>
 
   <dialog id="performance-modal">
-    <form method="dialog" class="modal-card" id="performance-form">
+    <form class="modal-card" id="performance-form">
       <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">×</button>
-      <span class="eyebrow">ADD TO SCHEDULE</span>
-      <h2>Add an act.</h2>
+      <input name="performanceId" type="hidden">
+      <span class="eyebrow" id="performance-modal-kicker">ADD TO SCHEDULE</span>
+      <h2 id="performance-modal-title">Add an act.</h2>
       <p id="performance-event-label"></p>
       <label>Artist<input name="artist" required placeholder="Band name"></label>
       <label>Stage<input name="stage" required placeholder="e.g. Main A"></label>
@@ -192,7 +193,10 @@
         <label>Ends<input name="endsAt" type="datetime-local" required></label>
       </div>
       <p class="modal-error" role="alert"></p>
-      <button class="button button--primary button--wide" value="default">Add to running order</button>
+      <div class="performance-form-actions">
+        <button class="button button--danger" id="performance-delete" type="button" data-action="delete-performance" hidden>Delete act</button>
+        <button class="button button--primary" id="performance-submit" type="submit">Add to running order</button>
+      </div>
     </form>
   </dialog>
 
