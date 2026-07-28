@@ -139,7 +139,7 @@ public sealed class PushNotificationSender(PushSettings settings)
         };
         if (!string.IsNullOrWhiteSpace(topic))
         {
-            options["headers"] = new Dictionary<string, string>
+            options["headers"] = new Dictionary<string, object>
             {
                 ["Urgency"] = "high",
                 ["Topic"] = topic
