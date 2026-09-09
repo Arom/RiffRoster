@@ -1,0 +1,8 @@
+{
+  "dataVersion":5,
+  "events":[{"id":"legacy-event","name":"Legacy fixture","location":"Synthetic venue","startDate":"2026-08-04","endDate":"2026-08-04","days":[{"id":"legacy-day","date":"2026-08-04","label":"Tuesday","performances":[{"id":"legacy-performance","artist":"Legacy act","stage":"Main","startsAt":"2026-08-04T23:30:00+02:00","endsAt":"2026-08-05T00:15:00+02:00"}]}]}],
+  "users":[{"username":"Legacy attendee","color":"#FFB000","joinedAt":"2026-01-01T00:00:00Z"}],
+  "selections":[{"username":"Legacy attendee","performanceId":"legacy-performance"}],
+  "pushDevices":[],
+  "reminderDeliveries":[]
+}

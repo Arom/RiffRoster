@@ -1,0 +1,14 @@
+{
+  "capturedAt": "2026-09-07T11:47:31.822Z",
+  "lighthouseVersion": "12.8.2",
+  "browser": "145.0.7632.6",
+  "scope": "Authenticated seeded schedule, synthetic account, local Development host; mobile simulated throttling; one measurement; no production latency.",
+  "scores": {
+    "performance": 100,
+    "accessibility": 96,
+    "best-practices": 96,
+    "seo": 90
+  },
+  "warnings": [],
+  "pwa": "Lighthouse PWA category is deprecated; installability and real-device offline/push need separate validation."
+}

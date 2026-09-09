@@ -1,0 +1,10 @@
+{
+  "dataVersion": 7,
+  "events": [{"id":"fixture-event","name":"Fixture Festival","location":"Synthetic venue","startDate":"2026-08-04","endDate":"2026-08-04","days":[{"id":"fixture-day","date":"2026-08-04","label":"Tuesday","performances":[{"id":"fixture-performance","artist":"Fixture act","stage":"Main","startsAt":"2026-08-04T20:00:00+02:00","endsAt":"2026-08-04T21:00:00+02:00"}]}]}],
+  "users": [{"username":"Fixture Alice","color":"#FFB000","joinedAt":"2026-01-01T00:00:00Z","loginName":"","passwordSalt":"","passwordHash":"","lastSelectedEventId":"fixture-event"},{"username":"Fixture Bob","color":"#70D6A7","joinedAt":"2026-01-02T00:00:00Z","loginName":"","passwordSalt":"","passwordHash":"","lastSelectedEventId":"fixture-event"}],
+  "selections": [{"username":"Fixture Alice","performanceId":"fixture-performance"}],
+  "pushDevices": [{"id":"fixture-push","username":"Fixture Alice","endpoint":"https://push.example.test/fixture","p256dh":"synthetic-key","auth":"synthetic-auth","leadMinutes":20,"includeCrewNames":false,"createdAt":"2026-08-01T00:00:00Z","lastSeenAt":"2026-08-01T00:00:00Z"}],
+  "reminderDeliveries": [{"pushDeviceId":"fixture-push","performanceId":"fixture-performance","performanceStartsAt":"2026-08-04T20:00:00+02:00","sentAt":"2026-08-04T17:40:00Z"}],
+  "groups": [{"id":"fixture-group","name":"Fixture crew","createdBy":"Fixture Alice","joinCodeHash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","createdAt":"2026-01-01T00:00:00Z"}],
+  "groupMemberships": [{"groupId":"fixture-group","username":"Fixture Alice","joinedAt":"2026-01-01T00:00:00Z"},{"groupId":"fixture-group","username":"Fixture Bob","joinedAt":"2026-01-02T00:00:00Z"}]
+}

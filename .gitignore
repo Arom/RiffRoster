@@ -3,3 +3,11 @@ obj/
 .appdata/
 App_Data/
 outputs/
+work/
+node_modules/
+test-results/
+playwright-report/
+TestResults/
+__pycache__/
+wwwroot/generated/
+.pnpm-store/

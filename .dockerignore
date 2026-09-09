@@ -6,3 +6,13 @@ App_Data/
 outputs/
 work/
 *.zip
+node_modules/
+tests/
+tools/*
+!tools/RiffRoster.DataMigration/
+!tools/stamp-web-cache.mjs
+test-results/
+playwright-report/
+docs/baseline/
+wwwroot/generated/
+.pnpm-store/

@@ -1,0 +1,55 @@
+name: Backend migration and baseline
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  characterize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.19.0'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:web
+      - run: dotnet restore RiffRoster.sln
+      - run: dotnet build RiffRoster.sln --no-restore
+      - name: Install PostgreSQL 17 backup clients
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+      - run: dotnet format whitespace RiffRoster.sln --no-restore --verify-no-changes
+      - run: dotnet test RiffRoster.sln --no-build --logger trx
+        env:
+          RIFFROSTER_PG_BIN: /usr/lib/postgresql/17/bin
+      - run: dotnet publish RiffRoster.csproj --configuration Release --no-restore --output work/publish
+      - run: dotnet publish tools/RiffRoster.DataMigration --configuration Release --no-restore --output work/migration
+      - run: python -m unittest discover -s tests/tools -v
+      - run: pnpm test
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - run: pnpm test:e2e
+        env:
+          RIFFROSTER_E2E_PROVIDER: Postgres
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: baseline-failure-evidence
+          path: |
+            playwright-report/
+            test-results/
+            tests/**/TestResults/
+          retention-days: 7

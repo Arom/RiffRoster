@@ -1,8 +1,9 @@
-const CACHE_NAME = 'riffroster-shell-v4';
+const CACHE_NAME = 'riffroster-shell-94f00256ff86205a';
 const APP_SHELL = [
   '/',
   '/styles.css',
   '/app.js',
+  '/generated/riffroster-web.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

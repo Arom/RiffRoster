@@ -5,10 +5,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>RiffRoster</RootNamespace>
     <RestoreConfigFile>$(MSBuildThisFileDirectory)NuGet.Config</RestoreConfigFile>
-    <DefaultItemExcludes>$(DefaultItemExcludes);outputs\**;work\**;.appdata\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);outputs\**;work\**;.appdata\**;App_Data\**;tests\**;tools\**;node_modules\**;test-results\**;playwright-report\**;docs\baseline\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="WebPush" Version="1.0.13" />
+    <Content Remove="package.json" />
+    <Compile Remove="src/**/*.cs" />
+    <Content Remove="src/**" />
+    <None Remove="src/**" />
+    <ProjectReference Include="src/RiffRoster.Api/RiffRoster.Api.csproj" />
   </ItemGroup>
+  <Target Name="RequireFrontendAssets" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!Exists('$(MSBuildThisFileDirectory)wwwroot/generated/riffroster-web.js')" Text="Frontend assets are missing. Run pnpm install --frozen-lockfile and pnpm build:web before building the application." />
+  </Target>
 </Project>

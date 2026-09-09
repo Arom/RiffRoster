@@ -99,7 +99,7 @@ async function login(event) {
   const accessCode = formData.get('accessCode');
   $('#login-error').textContent = '';
   try {
-    const session = await api('/api/session', { method: 'POST', body: JSON.stringify({ loginName, displayName, password, accessCode }) });
+    const session = await RiffRosterWeb.sessionPush.signIn({ method: 'POST', body: JSON.stringify({ loginName, displayName, password, accessCode }) });
     appState.username = session.user.username;
     appState.loginName = loginName;
     appState.isAdmin = session.isAdmin;
@@ -115,7 +115,7 @@ async function login(event) {
 
 async function loadApp() {
   try {
-    appState.data = await api('/api/state');
+    appState.data = await RiffRosterWeb.fetchState();
     appState.username = appState.data.currentUser;
     appState.isAdmin = appState.data.isAdmin;
     localStorage.setItem('riffroster.username', appState.username);
@@ -193,10 +193,7 @@ function renderAdminState() {
 function renderDays() {
   const activeEvent = currentEvent();
   const days = activeEvent?.days || [];
-  $('#day-tabs').innerHTML = days.map(day => `
-    <button class="day-tab ${day.id === appState.activeDayId ? 'active' : ''}" data-day-id="${day.id}" role="tab" aria-selected="${day.id === appState.activeDayId}">
-      <span>${escapeHtml(day.label)}</span><small>${formatShortDate(day.date)}</small>
-    </button>`).join('');
+  renderDayNavigation();
   $('#compare-day').innerHTML = days.map(day =>
     `<option value="${day.id}" ${day.id === appState.activeDayId ? 'selected' : ''}>${escapeHtml(day.label)} · ${formatShortDate(day.date)}</option>`
   ).join('');
@@ -216,8 +213,9 @@ function renderStageFilters() {
 function renderSchedule() {
   const day = currentDay();
   const container = $('#schedule-grid');
+  closeAttendeeNames();
   if (!day) {
-    container.innerHTML = emptyState('No festival day selected', 'Create a running order or choose another one to get started.');
+    RiffRosterWeb.renderSchedule(container, { empty: { title: 'No festival day selected', copy: 'Create a running order or choose another one to get started.', action: null } });
     return;
   }
 
@@ -241,58 +239,28 @@ function renderSchedule() {
 
   if (!performances.length) {
     const isBlankEvent = day.performances.length === 0;
-    container.innerHTML = emptyState(
-      isBlankEvent ? 'This day is wide open' : appState.activeView === 'mine' ? 'No picks yet' : 'No acts found',
-      isBlankEvent ? 'Add the first act to begin building this running order.' : appState.activeView === 'mine' ? 'Switch to the running order and star a few bands.' : 'Try another search or stage filter.',
-      isBlankEvent && appState.isAdmin ? 'open-performance-modal' : null
-    );
+    RiffRosterWeb.renderSchedule(container, { empty: {
+      title: isBlankEvent ? 'This day is wide open' : appState.activeView === 'mine' ? 'No picks yet' : 'No acts found',
+      copy: isBlankEvent ? 'Add the first act to begin building this running order.' : appState.activeView === 'mine' ? 'Switch to the running order and star a few bands.' : 'Try another search or stage filter.',
+      action: isBlankEvent && appState.isAdmin ? 'open-performance-modal' : null
+    } });
     return;
   }
 
   const timeline = buildTimeline(performances);
-  const laneCount = visibleStageNames.length;
-  const shellMinWidth = 68 + laneCount * 240;
-  const tickLabels = timeline.ticks.map(tick =>
-    `<time class="timeline-tick" style="top:${tick.top}px">${tick.label}</time>`
-  ).join('');
-  const gridLines = timeline.ticks.map(tick =>
-    `<span class="timeline-gridline" style="top:${tick.top}px" aria-hidden="true"></span>`
-  ).join('');
-
-  const headings = visibleStageNames.map(stage => {
-    const count = performances.filter(performance => performance.stage === stage).length;
-    const color = stageColor(stage, allStages.indexOf(stage));
-    return `<header class="timeline-stage-heading" style="--stage-color:${color}">
-      <h3>${escapeHtml(stage)}</h3><span>${count} ${plural(count, 'act')}</span>
-    </header>`;
-  }).join('');
-
-  const lanes = visibleStageNames.map(stage => {
-    const color = stageColor(stage, allStages.indexOf(stage));
-    const stagePerformances = performances.filter(performance => performance.stage === stage);
-    return `<section class="timeline-lane" style="--stage-color:${color}" aria-label="${escapeHtml(stage)}">
-      ${stagePerformances.map(performance => performanceHtml(
-        performance,
-        myIds.has(performance.id),
-        conflictIds.has(performance.id),
-        positionOnTimeline(performance, timeline)
-      )).join('')}
-    </section>`;
-  }).join('');
-
-  container.innerHTML = `<div class="timeline-swipe-hint">Swipe sideways to compare stages <span aria-hidden="true">↔</span></div>
-    <div class="schedule-timeline">
-      <div class="timeline-shell" style="min-width:${shellMinWidth}px;--lane-count:${laneCount};--timeline-height:${timeline.height}px;--timeline-half-hour:${timeline.halfHourOffset}px">
-        <div class="timeline-header">
-          <div class="timeline-corner">TIME</div>
-          <div class="timeline-stage-headings">${headings}</div>
-        </div>
-        <div class="timeline-body">
-          <div class="timeline-time-axis">${tickLabels}</div>
-          <div class="timeline-lanes">${gridLines}${lanes}</div>
-        </div>
-      </div>
-    </div>`;
+  RiffRosterWeb.renderSchedule(container, { timeline, lanes: visibleStageNames.map(stage => ({
+    stage, color: stageColor(stage, allStages.indexOf(stage)),
+    cards: performances.filter(performance => performance.stage === stage).map(performance => {
+      const attendees = usersForPerformance(performance.id);
+      return { id: performance.id, artist: performance.artist,
+        start: formatTime(performance.startsAt), end: formatTime(performance.endsAt),
+        selected: myIds.has(performance.id), clash: conflictIds.has(performance.id), admin: appState.isAdmin,
+        expandable: appState.activeView === 'mine' && attendees.length > 0,
+        otherCount: attendees.filter(user => !sameName(user.username, appState.username)).length,
+        attendees: attendees.map(user => ({ username: user.username, color: user.color, initials: initials(user.username) })),
+        position: positionOnTimeline(performance, timeline) };
+    })
+  })) });
 }
 
 function renderGroupContext() {
@@ -308,104 +276,11 @@ function renderGroupContext() {
   renderGroupMemberships();
 }
 
-function performanceHtml(performance, selected, clash, timelinePosition = null) {
-  const attendees = usersForPerformance(performance.id);
-  const otherCount = attendees.filter(user => !sameName(user.username, appState.username)).length;
-  const isShared = selected && otherCount > 0;
-  const end = formatTime(performance.endsAt);
-  const attendeeAvatars = attendees.slice(0, 4).reverse().map(user => avatarHtml(user, true)).join('');
-  const attendeeNames = attendees.map(user => user.username).join(', ');
-  const expandableAttendees = appState.activeView === 'mine' && attendees.length > 0;
-  const attendeeBadges = expandableAttendees
-    ? `<button type="button" class="attendance-avatars attendance-avatars--expandable" data-action="toggle-attendee-names" aria-expanded="false" aria-label="Show attendee names for ${escapeHtml(performance.artist)}">${attendeeAvatars}</button>
-       <span class="attendance-names-popover" hidden>${escapeHtml(attendeeNames)}</span>`
-    : `<div class="attendance-avatars">${attendeeAvatars}</div>`;
-  let attendanceText = 'No picks yet';
-  if (selected && otherCount) attendanceText = `<strong>You + ${otherCount}</strong> going`;
-  else if (selected) attendanceText = 'Only you — so far';
-  else if (attendees.length) attendanceText = `${attendees.length} friend${attendees.length === 1 ? '' : 's'} going`;
-
-  const adminEditButton = appState.isAdmin ? `<button class="performance-admin-button" data-action="open-edit-performance" data-id="${escapeHtml(performance.id)}" aria-label="Edit ${escapeHtml(performance.artist)}" title="Edit act">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-1 5 5-1L19 9l-4-4L4 16Zm9-9 4 4"/></svg>
-  </button>` : '';
-
-  const timelineClass = timelinePosition ? `timeline-performance ${timelinePosition.compact ? 'performance--compact' : ''}` : '';
-  const timelineStyle = timelinePosition ? ` style="top:${timelinePosition.top}px;height:${timelinePosition.height}px"` : '';
-  return `<article class="performance ${timelineClass} ${selected ? 'selected' : ''} ${isShared ? 'shared' : ''} ${clash ? 'clash' : ''}" data-performance-id="${performance.id}" title="${escapeHtml(performance.artist)} · ${formatTime(performance.startsAt)}–${end}"${timelineStyle}>
-    <div class="performance-time">${formatTime(performance.startsAt)} <span>→ ${end}</span></div>
-    <h4>${escapeHtml(performance.artist)}</h4>
-    ${adminEditButton}
-    <button class="pick-button" data-action="toggle-pick" data-id="${performance.id}" aria-label="${selected ? 'Remove' : 'Add'} ${escapeHtml(performance.artist)} ${selected ? 'from' : 'to'} your route" aria-pressed="${selected}">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>
-    </button>
-    <div class="attendance">
-      ${attendeeBadges}
-      <span class="attendance-label">${attendanceText}</span>
-    </div>
-    ${clash ? '<span class="clash-label">CLASH IN YOUR ROUTE</span>' : ''}
-  </article>`;
-}
-
-function buildTimeline(performances) {
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const pixelsPerMinute = 2.2;
-  const offsetMinutes = offsetMinutesFromIso(performances[0]?.startsAt);
-  const offsetMs = offsetMinutes * minute;
-  const earliest = Math.min(...performances.map(performance => new Date(performance.startsAt).getTime()));
-  const latest = Math.max(...performances.map(performance => new Date(performance.endsAt).getTime()));
-  const localEarliest = earliest + offsetMs;
-  const localLatest = latest + offsetMs;
-  const localStart = Math.floor(localEarliest / hour) * hour - 30 * minute;
-  const localEnd = Math.ceil(localLatest / hour) * hour + 30 * minute;
-  const start = localStart - offsetMs;
-  const end = localEnd - offsetMs;
-  const height = Math.round(((end - start) / minute) * pixelsPerMinute);
-  const ticks = [];
-
-  for (let localTick = Math.ceil(localStart / hour) * hour; localTick < localEnd; localTick += hour) {
-    const epoch = localTick - offsetMs;
-    ticks.push({
-      top: Math.round(((epoch - start) / minute) * pixelsPerMinute),
-      label: formatTimelineTime(epoch, offsetMinutes)
-    });
-  }
-
-  return {
-    start,
-    end,
-    height,
-    ticks,
-    pixelsPerMinute,
-    halfHourOffset: Math.round(30 * pixelsPerMinute)
-  };
-}
-
-function positionOnTimeline(performance, timeline) {
-  const minute = 60 * 1000;
-  const startsAt = new Date(performance.startsAt).getTime();
-  const endsAt = new Date(performance.endsAt).getTime();
-  const top = ((startsAt - timeline.start) / minute) * timeline.pixelsPerMinute;
-  const naturalHeight = ((endsAt - startsAt) / minute) * timeline.pixelsPerMinute - 5;
-  const height = Math.max(32, naturalHeight);
-  return {
-    top: Math.round(top * 10) / 10,
-    height: Math.round(height * 10) / 10,
-    compact: height < 66
-  };
-}
-
-function offsetMinutesFromIso(value) {
-  const match = String(value || '').match(/([+-])(\d{2}):(\d{2})$/);
-  if (!match) return 0;
-  const minutes = Number(match[2]) * 60 + Number(match[3]);
-  return match[1] === '-' ? -minutes : minutes;
-}
-
-function formatTimelineTime(epoch, offsetMinutes) {
-  const local = new Date(epoch + offsetMinutes * 60 * 1000);
-  return `${String(local.getUTCHours()).padStart(2, '0')}:${String(local.getUTCMinutes()).padStart(2, '0')}`;
-}
+// Typed compatibility bridge shared by Schedule and My route.
+function buildTimeline(performances) { return RiffRosterWeb.buildTimeline(performances); }
+function positionOnTimeline(performance, timeline) { return RiffRosterWeb.positionOnTimeline(performance, timeline); }
+function offsetMinutesFromIso(value) { return RiffRosterWeb.offsetMinutesFromIso(value); }
+function formatTimelineTime(epoch, offsetMinutes) { return RiffRosterWeb.formatTimelineTime(epoch, offsetMinutes); }
 
 function renderComparePicker() {
   const users = contextUsers();
@@ -471,7 +346,7 @@ function renderCompare() {
 
 async function togglePick(performanceId) {
   try {
-    const result = await api('/api/selections/toggle', {
+    const result = await RiffRosterWeb.mutations.toggle(performanceId, {
       method: 'POST',
       body: JSON.stringify({ performanceId })
     });
@@ -491,7 +366,7 @@ async function createEvent(event) {
   const errorNode = $('.modal-error', form);
   errorNode.textContent = '';
   try {
-    const created = await api('/api/events', { method: 'POST', body: JSON.stringify(data) });
+    const created = await RiffRosterWeb.mutations.createEvent({ method: 'POST', body: JSON.stringify(data) });
     appState.data.events.push(created);
     appState.activeEventId = created.id;
     appState.activeDayId = created.days[0]?.id;
@@ -528,7 +403,7 @@ async function deleteEvent(event) {
   errorNode.textContent = '';
   submitButton.disabled = true;
   try {
-    const result = await api(`/api/events/${encodeURIComponent(festivalEvent.id)}`, { method: 'DELETE' });
+    const result = await RiffRosterWeb.mutations.deleteEvent(festivalEvent.id, { method: 'DELETE' });
     $('#delete-event-modal').close();
     await loadApp();
     toast(`${result.deletedEventName} deleted`);
@@ -546,7 +421,7 @@ async function createGroup(event) {
   errorNode.textContent = '';
   try {
     const name = new FormData(form).get('name').trim();
-    const result = await api('/api/groups', { method: 'POST', body: JSON.stringify({ name }) });
+    const result = await RiffRosterWeb.mutations.createGroup({ method: 'POST', body: JSON.stringify({ name }) });
     appState.activeGroupId = result.group.id;
     form.reset();
     $('#new-group-code').textContent = result.joinCode;
@@ -563,7 +438,7 @@ async function joinGroup(event) {
   errorNode.textContent = '';
   try {
     const joinCode = new FormData(form).get('joinCode').trim();
-    const result = await api('/api/groups/join', { method: 'POST', body: JSON.stringify({ joinCode }) });
+    const result = await RiffRosterWeb.mutations.joinGroup({ method: 'POST', body: JSON.stringify({ joinCode }) });
     appState.activeGroupId = result.group.id;
     form.reset();
     await refreshAfterGroupChange();
@@ -575,7 +450,7 @@ async function leaveGroup(groupId) {
   const group = appState.data.groups.find(item => item.id === groupId);
   if (!group || !window.confirm(`Leave ${group.name}? Your personal picks will be kept.`)) return;
   try {
-    await api(`/api/groups/${encodeURIComponent(groupId)}/leave`, { method: 'POST' });
+    await RiffRosterWeb.mutations.leaveGroup(groupId, { method: 'POST' });
     if (appState.activeGroupId === groupId) appState.activeGroupId = null;
     await refreshAfterGroupChange();
     toast(`Left ${group.name}`);
@@ -584,7 +459,7 @@ async function leaveGroup(groupId) {
 
 async function refreshAfterGroupChange() {
   persistActiveGroup();
-  appState.data = await api('/api/state');
+  appState.data = await RiffRosterWeb.fetchState();
   restoreActiveGroup();
   initializeCompareUsers();
   renderAll();
@@ -626,7 +501,7 @@ async function copyGroupCode() {
 
 async function issueGroupCode(groupId) {
   try {
-    const result = await api(`/api/groups/${encodeURIComponent(groupId)}/join-code`, { method: 'POST' });
+    const result = await RiffRosterWeb.mutations.groupCode(groupId, { method: 'POST' });
     $('#new-group-code').textContent = result.joinCode;
     $('#join-code-result').hidden = false;
     toast('New join code ready');
@@ -655,10 +530,7 @@ async function createPerformance(event) {
   };
   const performanceId = formData.performanceId?.trim();
   try {
-    const endpoint = performanceId
-      ? `/api/events/${encodeURIComponent(appState.activeEventId)}/performances/${encodeURIComponent(performanceId)}`
-      : `/api/events/${encodeURIComponent(appState.activeEventId)}/performances`;
-    const saved = await api(endpoint, { method: performanceId ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+    const saved = await RiffRosterWeb.mutations.savePerformance(appState.activeEventId, performanceId || null, { method: performanceId ? 'PUT' : 'POST', body: JSON.stringify(payload) });
     if (performanceId) {
       for (const day of currentEvent().days)
         day.performances = day.performances.filter(performance => performance.id !== performanceId);
@@ -691,7 +563,7 @@ async function deletePerformance() {
   const errorNode = $('.modal-error', form);
   errorNode.textContent = '';
   try {
-    const result = await api(`/api/events/${encodeURIComponent(appState.activeEventId)}/performances/${encodeURIComponent(performanceId)}`, { method: 'DELETE' });
+    const result = await RiffRosterWeb.mutations.deletePerformance(appState.activeEventId, performanceId, { method: 'DELETE' });
     for (const day of currentEvent().days)
       day.performances = day.performances.filter(item => item.id !== performanceId);
     appState.data.selections = appState.data.selections.filter(selection => selection.performanceId !== performanceId);
@@ -759,7 +631,7 @@ async function changeEvent(event) {
 
 async function persistLastSelectedEvent() {
   if (!appState.activeEventId) return;
-  const result = await api('/api/account/last-event', {
+  const result = await RiffRosterWeb.mutations.lastEvent(appState.activeEventId, {
     method: 'PUT',
     body: JSON.stringify({ eventId: appState.activeEventId })
   });
@@ -1568,7 +1440,7 @@ async function importPosterRows() {
   button.disabled = true;
   button.textContent = 'Importing…';
   try {
-    const result = await api(`/api/events/${encodeURIComponent(appState.activeEventId)}/performances/bulk`, {
+    const result = await RiffRosterWeb.mutations.bulk(appState.activeEventId, {
       method: 'POST',
       body: JSON.stringify({ performances: state.rows.map(posterRowToPayload) })
     });
@@ -1729,7 +1601,7 @@ async function enableNotifications() {
 
     const registration = await registerServiceWorker();
     if (!registration) throw new Error('The background service could not start.');
-    const keyResponse = await api('/api/push/public-key');
+    const keyResponse = await RiffRosterWeb.sessionPush.publicKey();
     const existing = await registration.pushManager.getSubscription();
     const subscription = existing || await registration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -1749,7 +1621,7 @@ async function persistPushSubscription(subscription) {
   const serialized = subscription.toJSON();
   if (!serialized.keys?.p256dh || !serialized.keys?.auth)
     throw new Error('The browser did not provide notification encryption keys.');
-  return api('/api/push/subscriptions', {
+  return RiffRosterWeb.sessionPush.subscribe({
     method: 'POST',
     body: JSON.stringify({
       endpoint: subscription.endpoint,
@@ -1776,7 +1648,7 @@ async function disableNotifications() {
   if (!subscription) return refreshNotificationState();
   $('#notification-error').textContent = '';
   try {
-    await api('/api/push/subscriptions', {
+    await RiffRosterWeb.sessionPush.unsubscribe({
       method: 'DELETE',
       body: JSON.stringify({ endpoint: subscription.endpoint })
     });
@@ -1799,7 +1671,7 @@ async function sendTestNotification() {
   if (!appState.pushSubscription) return;
   $('#notification-error').textContent = '';
   try {
-    await api('/api/push/test', {
+    await RiffRosterWeb.sessionPush.test({
       method: 'POST',
       body: JSON.stringify({ endpoint: appState.pushSubscription.endpoint })
     });
@@ -1886,11 +1758,15 @@ function findConflicts(performances) {
   return conflicts;
 }
 
+function renderDayNavigation() {
+  const days = (currentEvent()?.days || []).map(day => ({
+    id: day.id, label: day.label, dateLabel: formatShortDate(day.date)
+  }));
+  RiffRosterWeb.renderDayTabs($('#day-tabs'), days, appState.activeDayId);
+}
+
 function syncDayControls() {
-  $$('.day-tab').forEach(button => {
-    button.classList.toggle('active', button.dataset.dayId === appState.activeDayId);
-    button.setAttribute('aria-selected', button.dataset.dayId === appState.activeDayId);
-  });
+  renderDayNavigation();
   $('#compare-day').value = appState.activeDayId;
 }
 
@@ -1953,7 +1829,7 @@ function persistActiveGroup() {
 async function signOut() {
   try {
     await disconnectPushForSignOut();
-    await api('/api/session/logout', { method: 'POST' });
+    await RiffRosterWeb.sessionPush.signOut();
   } catch (error) {
     if (error.status !== 401) toast(error.message, true);
   } finally {
@@ -1972,7 +1848,7 @@ async function disconnectPushForSignOut() {
     const subscription = appState.pushSubscription || await registration?.pushManager.getSubscription();
     if (!subscription) return;
     try {
-      await api('/api/push/subscriptions', {
+      await RiffRosterWeb.sessionPush.unsubscribe({
         method: 'DELETE',
         body: JSON.stringify({ endpoint: subscription.endpoint })
       });
@@ -2008,22 +1884,4 @@ function toast(message, isError = false) {
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
-}
-
-async function api(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    let message = data.message || `Request failed (${response.status})`;
-    if (response.status === 401 && url !== '/api/session') message = 'Your session has expired. Sign in again.';
-    if (response.status === 403) message = 'Administrator access is required for that action.';
-    if (response.status === 429) message = 'Too many attempts. Wait a minute and try again.';
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-  return data;
 }
