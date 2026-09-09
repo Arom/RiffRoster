@@ -20,6 +20,7 @@ RUN dotnet restore tools/RiffRoster.DataMigration/RiffRoster.DataMigration.cspro
 COPY . .
 COPY --from=frontend /src/wwwroot/generated/ wwwroot/generated/
 COPY --from=frontend /src/wwwroot/service-worker.js wwwroot/service-worker.js
+COPY --from=frontend /src/wwwroot/index.html wwwroot/index.html
 RUN dotnet publish RiffRoster.csproj \
     --configuration Release \
     --output /app/publish \

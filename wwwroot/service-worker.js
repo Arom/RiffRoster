@@ -1,9 +1,9 @@
-const CACHE_NAME = 'riffroster-shell-94f00256ff86205a';
+const CACHE_NAME = 'riffroster-shell-22ba8bfbc19ec201';
 const APP_SHELL = [
   '/',
-  '/styles.css',
-  '/app.js',
-  '/generated/riffroster-web.js',
+  '/styles.css?v=3ce54e5d05d24016',
+  '/app.js?v=3ce325b118cea68e',
+  '/generated/riffroster-web.js?v=be827598659c5d0a',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

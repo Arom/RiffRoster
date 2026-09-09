@@ -93,12 +93,14 @@ function bindEvents() {
 async function login(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
-  const loginName = formData.get('loginName').trim();
-  const displayName = formData.get('displayName').trim();
+  const loginName = String(formData.get('loginName') || '').trim();
+  const displayName = String(formData.get('displayName') || '').trim();
   const password = formData.get('password');
   const accessCode = formData.get('accessCode');
   $('#login-error').textContent = '';
   try {
+    if (!loginName || !displayName || typeof password !== 'string' || typeof accessCode !== 'string')
+      throw new Error('Please refresh this page, then complete all sign-in fields.');
     const session = await RiffRosterWeb.sessionPush.signIn({ method: 'POST', body: JSON.stringify({ loginName, displayName, password, accessCode }) });
     appState.username = session.user.username;
     appState.loginName = loginName;

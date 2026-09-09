@@ -62,7 +62,7 @@ test('the typed frontend bundle is available offline without caching authenticat
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
   await context.setOffline(true);
   const result = await page.evaluate(async () => {
-    const response = await fetch('/generated/riffroster-web.js');
+    const response = await fetch(document.querySelector('script[src*="generated/riffroster-web.js"]').src);
     const script = await response.text();
     let apiFailed = false;
     try { await fetch('/api/state'); } catch { apiFailed = true; }
@@ -263,4 +263,24 @@ test('a mismatched pick result leaves the route unchanged and does not retry', a
   await expect(pick).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#my-count')).toHaveText('0');
   expect(calls).toBe(1);
+});
+
+test('login uses versioned assets and handles a missing form field without an uncaught error', async ({page}) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/app.js', route => route.fulfill({contentType:'application/javascript',body:'throw new Error("stale unversioned script loaded")'}));
+  await page.goto('/');
+  await expect(page.locator('script[src^="/app.js?v="]')).toHaveCount(1);
+  await page.locator('#login-name').fill('missing-field-user');
+  await page.locator('#display-name').fill('MissingField');
+  await page.locator('#account-password').fill('fixture-password-only');
+  await page.locator('#access-code').fill('friends-local');
+  await page.locator('#login-name').evaluate(input => input.removeAttribute('name'));
+  await page.locator('#login-form button[type="submit"]').click();
+  await expect(page.locator('#login-error')).toContainText('Please refresh');
+  expect(errors).toEqual([]);
+  await page.reload();
+  await expect(page.locator('#login-name')).toHaveAttribute('name', 'loginName');
+  await expect(page.locator('#login-error')).toBeEmpty();
+  expect(errors).toEqual([]);
 });
