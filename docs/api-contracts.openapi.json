@@ -1,0 +1,677 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "RiffRoster current request contracts",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/session": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/session/logout": {
+      "post": {
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/state": {
+      "get": {
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/events": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEventRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/events/{eventId}/performances": {
+      "post": {
+        "parameters": [
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePerformanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/events/{eventId}": {
+      "delete": {
+        "parameters": [
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/events/{eventId}/performances/{performanceId}": {
+      "put": {
+        "parameters": [
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "performanceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePerformanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "performanceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/events/{eventId}/performances/bulk": {
+      "post": {
+        "parameters": [
+          {
+            "name": "eventId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkCreatePerformancesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/groups/{groupId}/owner": {
+      "put": {
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferGroupOwnerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/groups": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/groups/join": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinGroupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/groups/{groupId}/leave": {
+      "post": {
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/groups/{groupId}/join-code": {
+      "post": {
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/push/public-key": {
+      "get": {
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/push/subscriptions": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavePushSubscriptionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      },
+      "delete": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeletePushSubscriptionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/push/test": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestPushRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/selections/toggle": {
+      "post": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToggleSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/selections/{performanceId}": {
+      "put": {
+        "parameters": [
+          {
+            "name": "performanceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    },
+    "/api/account/last-event": {
+      "put": {
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLastSelectedEventRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "Endpoint response; runtime client decoders validate successful response shapes."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "loginName": {
+            "type": "string",
+            "nullable": true
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "password": {
+            "type": "string",
+            "nullable": true
+          },
+          "accessCode": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "SetSelectionRequest": {
+        "type": "object",
+        "properties": {
+          "selected": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "mutationId": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "ToggleSelectionRequest": {
+        "type": "object",
+        "properties": {
+          "performanceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "performanceId"
+        ]
+      },
+      "SetLastSelectedEventRequest": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "CreateGroupRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "JoinGroupRequest": {
+        "type": "object",
+        "properties": {
+          "joinCode": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "TransferGroupOwnerRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "CreateEventRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "startDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "endDate": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "name",
+          "location",
+          "startDate",
+          "endDate"
+        ]
+      },
+      "CreatePerformanceRequest": {
+        "type": "object",
+        "properties": {
+          "artist": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "endsAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "artist",
+          "stage",
+          "startsAt",
+          "endsAt"
+        ]
+      },
+      "BulkCreatePerformancesRequest": {
+        "type": "object",
+        "properties": {
+          "performances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreatePerformanceRequest"
+            },
+            "nullable": true
+          }
+        },
+        "required": []
+      },
+      "BrowserPushKeys": {
+        "type": "object",
+        "properties": {
+          "p256dh": {
+            "type": "string"
+          },
+          "auth": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "p256dh",
+          "auth"
+        ]
+      },
+      "SavePushSubscriptionRequest": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "keys": {
+            "$ref": "#/components/schemas/BrowserPushKeys",
+            "nullable": true
+          },
+          "leadMinutes": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "includeCrewNames": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "endpoint",
+          "leadMinutes",
+          "includeCrewNames"
+        ]
+      },
+      "DeletePushSubscriptionRequest": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint"
+        ]
+      },
+      "TestPushRequest": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint"
+        ]
+      }
+    }
+  }
+}

@@ -30,6 +30,7 @@ public sealed partial class DataStore
                 isAdmin,
                 lastSelectedEventId = currentUser.LastSelectedEventId,
                 events = _state.Events,
+                eventVersions = _state.Events.ToDictionary(festival => festival.Id, EventVersion),
                 users = _state.Users
                     .Where(user => visibleUserNames.Contains(user.Username))
                     .OrderBy(user => user.JoinedAt)

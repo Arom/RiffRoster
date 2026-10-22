@@ -4,10 +4,11 @@
   "packageManager": "pnpm@11.19.0",
   "scripts": {
     "test": "pnpm build:web && node --test tests/frontend/*.test.cjs",
-    "test:e2e": "pnpm build:web && dotnet build RiffRoster.csproj --no-restore --verbosity quiet && playwright test",
+    "test:e2e": "pnpm build:web && dotnet build RiffRoster.sln --no-restore --verbosity quiet && playwright test baseline.spec.cjs --grep-invert \"mismatched pick result|missing form field\" && playwright test baseline.spec.cjs --grep \"mismatched pick result|missing form field\" && playwright test phase3.spec.cjs",
     "baseline": "node tools/capture-baseline.mjs",
     "typecheck": "tsc -p src/RiffRoster.Web/tsconfig.json",
-    "build:web": "pnpm typecheck && vite build --config src/RiffRoster.Web/vite.config.mjs && node tools/stamp-web-cache.mjs"
+    "build:web": "pnpm generate:api && pnpm typecheck && vite build --config src/RiffRoster.Web/vite.config.mjs && vite build --config src/RiffRoster.Web/vite.shell.config.mjs && node tools/stamp-web-cache.mjs",
+    "generate:api": "node tools/generate-api-client.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

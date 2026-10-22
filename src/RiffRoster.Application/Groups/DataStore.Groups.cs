@@ -99,6 +99,27 @@ public sealed partial class DataStore
         }
     }
 
+    public object? TransferGroupOwner(string username, string groupId, string nextUsername)
+    {
+        using (EnterState())
+        {
+            var group = _state.Groups.FirstOrDefault(item => item.Id == groupId);
+            if (group is null || !group.CreatedBy.Equals(username, StringComparison.OrdinalIgnoreCase)) return null;
+            var members = _state.GroupMemberships.Where(item => item.GroupId == groupId).ToList();
+            if (!members.Any(item => item.Username.Equals(username, StringComparison.OrdinalIgnoreCase))) return null;
+            var next = members.FirstOrDefault(item => item.Username.Equals(nextUsername, StringComparison.OrdinalIgnoreCase));
+            if (next is null) return null;
+            if (!group.CreatedBy.Equals(next.Username, StringComparison.OrdinalIgnoreCase))
+            {
+                var index = _state.Groups.IndexOf(group);
+                group = group with { CreatedBy = next.Username };
+                _state.Groups[index] = group;
+                Save();
+            }
+            return new { group = PublicGroup(group, username) };
+        }
+    }
+
     private object PublicGroup(FestivalGroup group, string currentUsername)
     {
         var members = _state.GroupMemberships

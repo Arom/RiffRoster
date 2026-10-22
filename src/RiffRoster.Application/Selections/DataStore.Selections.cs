@@ -28,6 +28,29 @@ public sealed partial class DataStore
         }
     }
 
+    private static string EventVersion(FestivalEvent festival) =>
+        Convert.ToHexString(SHA256.HashData(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(festival)));
+
+    public object? SetSelection(string username, string performanceId, bool selected, string? mutationId = null)
+    {
+        using (EnterState())
+        {
+            var festival = _state.Events.FirstOrDefault(e => e.Days.SelectMany(d => d.Performances).Any(p => p.Id == performanceId));
+            if (festival is null) return null;
+            var user = UserByName(username);
+            var existing = _state.Selections.FirstOrDefault(selection =>
+                selection.PerformanceId == performanceId && selection.Username.Equals(user.Username, StringComparison.OrdinalIgnoreCase));
+            if (selected && existing is null) _state.Selections.Add(new UserSelection(user.Username, performanceId));
+            if (!selected && existing is not null)
+            {
+                _state.Selections.Remove(existing);
+                RemoveReminderDeliveriesForSelection(user.Username, performanceId);
+            }
+            if (selected != (existing is not null)) Save();
+            return new { selected, performanceId, username = user.Username, mutationId, eventId = festival.Id, eventVersion = EventVersion(festival) };
+        }
+    }
+
     public bool SetLastSelectedEvent(string username, string eventId)
     {
         using (EnterState())

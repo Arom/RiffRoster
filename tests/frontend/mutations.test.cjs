@@ -6,6 +6,14 @@ const path = require('node:path');
 const source = readFileSync(path.join(__dirname, '../../wwwroot/generated/riffroster-web.js'), 'utf8');
 function bridge(fetch) { const context = vm.createContext({Headers, fetch, console}); vm.runInContext(source, context); return context.RiffRosterWeb; }
 const decoders = bridge().mutationDecoders;
+test('ownership acknowledgement must match the group and a current member', () => {
+  const member = {username:'Bob',color:'#FFB000',joinedAt:'2026-01-01T00:00:00Z'};
+  const group = {id:'crew',name:'Crew',createdBy:'Bob',isOwner:false,members:[member]};
+  assert.equal(decoders.transferOwner({group},'crew','bob').group.createdBy,'Bob');
+  assert.throws(()=>decoders.transferOwner({group},'other','Bob'));
+  assert.throws(()=>decoders.transferOwner({group},'crew','Alice'));
+  assert.throws(()=>decoders.transferOwner({group:{...group,members:[{...member,username:'Alice'}]}},'crew','Bob'));
+});
 const act = {id:'act', artist:'Band', stage:'Main', startsAt:'2026-08-04T20:00:00Z', endsAt:'2026-08-04T21:00:00Z'};
 test('mutation decoders preserve values and reject mismatched identities and invalid counts', () => {
   assert.equal(decoders.toggle({selected:false, performanceId:'act', username:'Alice'}, 'act').selected, false);
@@ -27,13 +35,13 @@ test('invalid successful mutations advise refresh without retrying, including in
   for (const json of [async () => null, async () => {throw new SyntaxError('private-value');}]) {
     let calls = 0;
     const api = bridge(async () => { calls++; return {ok:true, status:200, json}; });
-    await assert.rejects(api.mutations.toggle('act', {method:'POST'}), error => /may have been saved.*Refresh/.test(error.message) && !error.message.includes('private-value'));
+    await assert.rejects(api.mutations.toggle('act'), error => /may have been saved.*Refresh/.test(error.message) && !error.message.includes('private-value'));
     assert.equal(calls, 1);
   }
 });
 test('typed mutation methods encode route IDs and retain status errors', async () => {
   let url;
   const api = bridge(async value => { url = value; return {ok:false, status:403, json:async () => ({})}; });
-  await assert.rejects(api.mutations.deletePerformance('a/b', 'c?d', {method:'DELETE'}), error => error.status === 403);
+  await assert.rejects(api.mutations.deletePerformance('a/b', 'c?d'), error => error.status === 403);
   assert.equal(url, '/api/events/a%2Fb/performances/c%3Fd');
 });

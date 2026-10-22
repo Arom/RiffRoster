@@ -1,5 +1,10 @@
+const sessionLifecycle = RiffRosterWeb.createSessionLifecycle();
+let sessionChannel = null;
+let offlineRevision = 0;
 const appState = {
   data: null,
+  offline: false,
+  cacheAvailable: false,
   username: localStorage.getItem('riffroster.username') || '',
   loginName: localStorage.getItem('riffroster.loginName') || '',
   isAdmin: false,
@@ -27,13 +32,19 @@ const appState = {
 
 const PUSH_LEAD_KEY = 'riffroster.pushLeadMinutes';
 const PUSH_CREW_NAMES_KEY = 'riffroster.pushCrewNames';
-const COMPARE_USERS_KEY = 'riffroster.compareUsers';
 const ACTIVE_GROUP_KEY = 'riffroster.activeGroup';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 document.addEventListener('DOMContentLoaded', () => {
+  sessionChannel = RiffRosterWeb.connectSessionChannel(() => {
+    sessionLifecycle.invalidate();
+    clearSessionView();
+  });
+  window.addEventListener('online', () => { if (appState.data) loadApp(); });
+  window.addEventListener('offline', () => { if (appState.data) { appState.offline = true; appState.isAdmin = false; renderAll(); updateSyncStatus(); } });
+  $('#sync-retry').addEventListener('click', loadApp);
   bindEvents();
   applyStoredNotificationPreferences();
   $('#login-name').value = appState.loginName;
@@ -97,11 +108,19 @@ async function login(event) {
   const displayName = String(formData.get('displayName') || '').trim();
   const password = formData.get('password');
   const accessCode = formData.get('accessCode');
+  const authentication = sessionLifecycle.beginAuthentication();
+  if (authentication === null) return;
   $('#login-error').textContent = '';
   try {
     if (!loginName || !displayName || typeof password !== 'string' || typeof accessCode !== 'string')
       throw new Error('Please refresh this page, then complete all sign-in fields.');
-    const session = await RiffRosterWeb.sessionPush.signIn({ method: 'POST', body: JSON.stringify({ loginName, displayName, password, accessCode }) });
+    const session = await RiffRosterWeb.withPushOperation(async () => {
+      if (!sessionLifecycle.isAuthenticationCurrent(authentication)) return null;
+      const result = await RiffRosterWeb.sessionPush.signIn({ loginName, displayName, password, accessCode });
+      sessionChannel?.changed();
+      return result;
+    });
+    if (!session || !sessionLifecycle.isAuthenticationCurrent(authentication)) return;
     appState.username = session.user.username;
     appState.loginName = loginName;
     appState.isAdmin = session.isAdmin;
@@ -109,35 +128,87 @@ async function login(event) {
     localStorage.setItem('riffroster.loginName', loginName);
     $('#account-password').value = '';
     $('#access-code').value = '';
+    sessionLifecycle.finishAuthentication(authentication);
     await loadApp();
   } catch (error) {
+    if (!sessionLifecycle.isAuthenticationCurrent(authentication)) return;
     $('#login-error').textContent = error.message;
-  }
+  } finally { sessionLifecycle.finishAuthentication(authentication); }
 }
 
 async function loadApp() {
+  const read = sessionLifecycle.beginRead();
+  if (!read) return;
   try {
-    appState.data = await RiffRosterWeb.fetchState();
+    let data = await RiffRosterWeb.fetchState();
+    if (!sessionLifecycle.isCurrent(read)) return;
+    if (await RiffRosterWeb.offline.pending(data.currentUser).catch(() => 0)) {
+      data = await RiffRosterWeb.withPushOperation(async () => {
+        if (!sessionLifecycle.isCurrent(read)) return data;
+        const snapshot = await RiffRosterWeb.fetchState();
+        if (!sessionLifecycle.isCurrent(read)) return snapshot;
+        const result = await RiffRosterWeb.offline.sync(snapshot);
+        if (result.removed) toast(`${result.removed} queued picks referred to removed acts.`, true);
+        return RiffRosterWeb.fetchState();
+      });
+    }
+    if (!data || !sessionLifecycle.isCurrent(read)) return;
+    let pending = 0;
+    let revision;
+    do {
+      revision = offlineRevision;
+      pending = await RiffRosterWeb.offline.pending(data.currentUser).catch(() => 0);
+      if (pending) data = await RiffRosterWeb.offline.overlay(data);
+    } while (revision !== offlineRevision);
+    if (!sessionLifecycle.isCurrent(read)) return;
+    appState.offline = pending > 0;
+    appState.data = data;
+    cacheCurrentState();
     appState.username = appState.data.currentUser;
-    appState.isAdmin = appState.data.isAdmin;
+    appState.isAdmin = !appState.offline && appState.data.isAdmin;
     localStorage.setItem('riffroster.username', appState.username);
-    const preferredEventId = appState.data.lastSelectedEventId;
-    appState.activeEventId = preferredEventId && eventById(preferredEventId)
-      ? preferredEventId
-      : appState.data.events[0]?.id || null;
-    const activeEvent = currentEvent();
-    appState.activeDayId = activeEvent?.days.some(day => day.id === appState.activeDayId) ? appState.activeDayId : activeEvent?.days[0]?.id;
+    Object.assign(appState, RiffRosterWeb.navigation.event(appState.data, appState.data.lastSelectedEventId, appState.activeDayId));
     restoreActiveGroup();
     initializeCompareUsers();
     showApp();
     renderAll();
     focusPerformanceFromNotification();
+    updateSyncStatus();
     refreshNotificationState({ sync: true }).catch(error =>
       console.warn('RiffRoster could not refresh notification settings.', error));
   } catch (error) {
+    if (!sessionLifecycle.isCurrent(read)) return;
+    if (!navigator.onLine || error instanceof TypeError) {
+      try {
+        const cached = await RiffRosterWeb.offline.restore(appState.username);
+        if (!sessionLifecycle.isCurrent(read)) return;
+        if (cached) {
+          appState.data = cached.state; appState.offline = true; appState.isAdmin = false; appState.cacheAvailable = true;
+          Object.assign(appState, RiffRosterWeb.navigation.event(cached.state, cached.state.lastSelectedEventId, appState.activeDayId));
+          restoreActiveGroup(); initializeCompareUsers(); showApp(); renderAll();
+          await updateSyncStatus(cached.savedAt); return;
+        }
+      } catch { /* Corrupt cache must not replace validated live state. */ }
+    }
+    if (appState.data && error.status !== 401 && error.status !== 403) {
+      appState.offline = true; appState.isAdmin = false; renderAll();
+      await updateSyncStatus(); toast(`Sync paused: ${error.message}`, true); return;
+    }
+    if (error.status === 401) RiffRosterWeb.offline.clear().catch(() => {});
     showLogin();
     if (error.status !== 401) $('#login-error').textContent = `Could not load the running order: ${error.message}`;
   }
+}
+
+async function updateSyncStatus(savedAt) {
+  if (!appState.data) return;
+  const pending = await RiffRosterWeb.offline.pending(appState.username).catch(() => 0);
+  if (!appState.data) return;
+  $('#sync-status').hidden = false;
+  $('#sync-status').textContent = appState.offline
+    ? `Offline - ${pending} queued ${plural(pending, 'pick')}. ${savedAt ? `Saved ${new Date(savedAt).toLocaleString()}.` : 'Changes sync when connected.'}`
+    : pending ? `${pending} picks waiting to sync.` : `All picks synced. ${appState.cacheAvailable ? 'Available offline on this device.' : 'Offline copy unavailable.'}`;
+  $('#sync-retry').hidden = !appState.offline && !pending;
 }
 
 function showLogin() {
@@ -154,7 +225,18 @@ function showApp() {
   window.scrollTo(0, 0);
 }
 
+function cacheCurrentState() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
+  RiffRosterWeb.offline.cache(appState.data).then(() => {
+    if (sessionLifecycle.isActionCurrent(action)) { appState.cacheAvailable = true; updateSyncStatus(); }
+  }).catch(() => {
+    if (sessionLifecycle.isActionCurrent(action)) { appState.cacheAvailable = false; updateSyncStatus(); }
+  });
+}
+
 function renderAll() {
+  cacheCurrentState();
   renderHeader();
   renderGroupContext();
   renderAdminState();
@@ -182,8 +264,8 @@ function renderHeader() {
   $('#profile-button').textContent = initials(appState.username);
   $('#profile-button').style.background = me?.color || '#ffb000';
   const roleLabel = appState.isAdmin ? 'Administrator' : 'Member';
-  $('#profile-button').setAttribute('aria-label', `Signed in as ${appState.username}, ${roleLabel}. Click to sign out.`);
-  $('#profile-button').title = `${appState.username} · ${roleLabel} · Sign out`;
+  $('#profile-button').setAttribute('aria-label', `Signed in as ${appState.username}, ${roleLabel}. Open your profile.`);
+  $('#profile-button').title = `${appState.username} · ${roleLabel} · Profile`;
   $('#my-count').textContent = selectionsForUser(appState.username).length;
 }
 
@@ -347,38 +429,58 @@ function renderCompare() {
 }
 
 async function togglePick(performanceId) {
+  if (appState.data && (appState.offline || !navigator.onLine)) {
+    const selected = !userHasPick(appState.username, performanceId);
+    const action = sessionLifecycle.beginAction();
+    if (action === null) return;
+    try {
+      await RiffRosterWeb.offline.queue(appState.username, performanceId, selected);
+      if (!sessionLifecycle.isActionCurrent(action)) return;
+      offlineRevision++;
+      appState.data = RiffRosterWeb.scheduleState.pick(appState.data, {username:appState.username,performanceId,selected});
+      appState.offline = true;
+      renderAll(); await updateSyncStatus();
+    } catch (error) { toast(error.message, true); }
+    return;
+  }
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   try {
-    const result = await RiffRosterWeb.mutations.toggle(performanceId, {
-      method: 'POST',
-      body: JSON.stringify({ performanceId })
-    });
-    if (result.selected) appState.data.selections.push({ username: appState.username, performanceId });
-    else appState.data.selections = appState.data.selections.filter(selection => !(selection.performanceId === performanceId && sameName(selection.username, appState.username)));
+    const result = await RiffRosterWeb.mutations.toggle(performanceId);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
+    appState.data = RiffRosterWeb.scheduleState.pick(appState.data, result);
+    cacheCurrentState();
     renderHeader();
     renderSchedule();
     renderCompare();
     toast(result.selected ? 'Added to your route' : 'Removed from your route');
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; toast(error.message, true); }
 }
 
 async function createEvent(event) {
   event.preventDefault();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const form = event.currentTarget;
   const data = Object.fromEntries(new FormData(form));
   const errorNode = $('.modal-error', form);
   errorNode.textContent = '';
   try {
-    const created = await RiffRosterWeb.mutations.createEvent({ method: 'POST', body: JSON.stringify(data) });
-    appState.data.events.push(created);
+    const created = await RiffRosterWeb.mutations.createEvent(data);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
+    appState.data = RiffRosterWeb.scheduleState.event(appState.data, created);
     appState.activeEventId = created.id;
     appState.activeDayId = created.days[0]?.id;
     appState.visibleStages.clear();
+    initializeCompareUsers();
     form.closest('dialog').close();
     form.reset();
     renderAll();
-    persistLastSelectedEvent().catch(error => toast(`Festival created, but your selection could not be saved: ${error.message}`, true));
+    persistLastSelectedEvent().catch(error => sessionLifecycle.isActionCurrent(action) && toast(`Festival created, but your selection could not be saved: ${error.message}`, true));
     toast(`${created.name} is ready`);
-  } catch (error) { errorNode.textContent = error.message; }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; errorNode.textContent = error.message; }
 }
 
 function openDeleteEventModal() {
@@ -395,6 +497,8 @@ function openDeleteEventModal() {
 
 async function deleteEvent(event) {
   event.preventDefault();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   if (!appState.isAdmin) return toast('Administrator access is required', true);
   const festivalEvent = currentEvent();
   if (!festivalEvent) return;
@@ -405,11 +509,14 @@ async function deleteEvent(event) {
   errorNode.textContent = '';
   submitButton.disabled = true;
   try {
-    const result = await RiffRosterWeb.mutations.deleteEvent(festivalEvent.id, { method: 'DELETE' });
+    const result = await RiffRosterWeb.mutations.deleteEvent(festivalEvent.id);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     $('#delete-event-modal').close();
     await loadApp();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast(`${result.deletedEventName} deleted`);
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     errorNode.textContent = error.message;
   } finally {
     submitButton.disabled = false;
@@ -418,53 +525,76 @@ async function deleteEvent(event) {
 
 async function createGroup(event) {
   event.preventDefault();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const form = event.currentTarget;
   const errorNode = $('.modal-error', form);
   errorNode.textContent = '';
   try {
     const name = new FormData(form).get('name').trim();
-    const result = await RiffRosterWeb.mutations.createGroup({ method: 'POST', body: JSON.stringify({ name }) });
+    const result = await RiffRosterWeb.mutations.createGroup({ name });
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     appState.activeGroupId = result.group.id;
     form.reset();
     $('#new-group-code').textContent = result.joinCode;
     $('#join-code-result').hidden = false;
     await refreshAfterGroupChange();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast(`${result.group.name} created`);
-  } catch (error) { errorNode.textContent = error.message; }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; errorNode.textContent = error.message; }
 }
 
 async function joinGroup(event) {
   event.preventDefault();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const form = event.currentTarget;
   const errorNode = $('.modal-error', form);
   errorNode.textContent = '';
   try {
     const joinCode = new FormData(form).get('joinCode').trim();
-    const result = await RiffRosterWeb.mutations.joinGroup({ method: 'POST', body: JSON.stringify({ joinCode }) });
+    const result = await RiffRosterWeb.mutations.joinGroup({ joinCode });
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     appState.activeGroupId = result.group.id;
     form.reset();
     await refreshAfterGroupChange();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast(result.alreadyMember ? `${result.group.name} selected` : `Joined ${result.group.name}`);
-  } catch (error) { errorNode.textContent = error.message; }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; errorNode.textContent = error.message; }
 }
 
 async function leaveGroup(groupId) {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const group = appState.data.groups.find(item => item.id === groupId);
   if (!group || !window.confirm(`Leave ${group.name}? Your personal picks will be kept.`)) return;
   try {
-    await RiffRosterWeb.mutations.leaveGroup(groupId, { method: 'POST' });
+    await RiffRosterWeb.mutations.leaveGroup(groupId);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     if (appState.activeGroupId === groupId) appState.activeGroupId = null;
     await refreshAfterGroupChange();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast(`Left ${group.name}`);
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; toast(error.message, true); }
 }
 
 async function refreshAfterGroupChange() {
+  const read = sessionLifecycle.beginRead();
+  if (!read) return;
   persistActiveGroup();
-  appState.data = await RiffRosterWeb.fetchState();
-  restoreActiveGroup();
-  initializeCompareUsers();
-  renderAll();
+  try {
+    const data = await RiffRosterWeb.fetchState();
+    if (!sessionLifecycle.isCurrent(read)) return;
+    appState.data = data;
+    restoreActiveGroup();
+    initializeCompareUsers();
+    renderAll();
+  } catch (error) {
+    if (sessionLifecycle.isCurrent(read)) throw error;
+  }
 }
 
 function renderGroupMemberships() {
@@ -478,6 +608,13 @@ function renderGroupMemberships() {
         <span>${group.members.length} ${plural(group.members.length, 'member')} · ${group.members.map(member => escapeHtml(member.username)).join(', ')}</span>
       </button>
       <div class="group-membership-actions">
+        ${group.isOwner && !appState.offline && group.members.length > 1 ? `<div class="owner-transfer">
+          <label>New owner of ${escapeHtml(group.name)}<select data-owner-target>
+            <option value="">Choose a member</option>
+            ${group.members.filter(member => !sameName(member.username, appState.username)).map(member => `<option value="${escapeHtml(member.username)}">${escapeHtml(member.username)}</option>`).join('')}
+          </select></label>
+          <button type="button" class="text-button" data-action="transfer-owner" data-group-id="${escapeHtml(group.id)}">Transfer ownership</button>
+        </div>` : ''}
         ${group.isOwner ? `<button type="button" class="text-button" data-action="new-group-code" data-group-id="${escapeHtml(group.id)}">New join code</button>` : ''}
         <button type="button" class="text-button" data-action="leave-group" data-group-id="${escapeHtml(group.id)}">Leave</button>
       </div>
@@ -502,16 +639,39 @@ async function copyGroupCode() {
 }
 
 async function issueGroupCode(groupId) {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   try {
-    const result = await RiffRosterWeb.mutations.groupCode(groupId, { method: 'POST' });
+    const result = await RiffRosterWeb.mutations.groupCode(groupId);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     $('#new-group-code').textContent = result.joinCode;
     $('#join-code-result').hidden = false;
     toast('New join code ready');
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; toast(error.message, true); }
+}
+
+async function transferGroupOwner(node) {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
+  const group = appState.data.groups.find(item => item.id === node.dataset.groupId);
+  const username = $('[data-owner-target]', node.closest('.owner-transfer')).value;
+  if (!group?.isOwner || !username) return toast('Choose a current group member first.', true);
+  if (!window.confirm(`Make ${username} the owner of ${group.name}? You will remain a member and lose owner controls.`)) return;
+  node.disabled = true;
+  try {
+    const result = await RiffRosterWeb.mutations.transferOwner(group.id, username);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
+    appState.data.groups = appState.data.groups.map(item => item.id === group.id ? result.group : item);
+    renderAll();
+    toast(`${result.group.createdBy} now owns ${result.group.name}.`);
+  } catch (error) {
+    if (sessionLifecycle.isActionCurrent(action)) toast(error.message, true);
+  } finally { node.disabled = false; }
 }
 
 function selectGroup(groupId) {
-  appState.activeGroupId = groupId;
+  appState.activeGroupId = RiffRosterWeb.navigation.group(appState.data, groupId);
   persistActiveGroup();
   initializeCompareUsers();
   renderAll();
@@ -520,6 +680,8 @@ function selectGroup(groupId) {
 
 async function createPerformance(event) {
   event.preventDefault();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const form = event.currentTarget;
   const formData = Object.fromEntries(new FormData(form));
   const errorNode = $('.modal-error', form);
@@ -532,30 +694,31 @@ async function createPerformance(event) {
   };
   const performanceId = formData.performanceId?.trim();
   try {
-    const saved = await RiffRosterWeb.mutations.savePerformance(appState.activeEventId, performanceId || null, { method: performanceId ? 'PUT' : 'POST', body: JSON.stringify(payload) });
-    if (performanceId) {
-      for (const day of currentEvent().days)
-        day.performances = day.performances.filter(performance => performance.id !== performanceId);
-    }
-
-    const scheduleDate = scheduleDateForPerformance(saved);
-    const targetDay = currentEvent().days.find(day => day.date === scheduleDate);
-    if (targetDay) {
-      targetDay.performances.push(saved);
-      targetDay.performances.sort(byStart);
-      appState.activeDayId = targetDay.id;
-      appState.visibleStages.clear();
+    const eventId = appState.activeEventId;
+    const saved = await RiffRosterWeb.mutations.savePerformance(eventId, performanceId || null, payload);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
+    const update = RiffRosterWeb.scheduleState.savePerformance(appState.data, eventId, saved);
+    appState.data = update.state;
+    if (update.dayId) {
+      if (appState.activeEventId === eventId) {
+        appState.activeDayId = update.dayId;
+        appState.visibleStages.clear();
+      }
     } else {
       await loadApp();
+      if (!sessionLifecycle.isActionCurrent(action)) return;
     }
     form.closest('dialog').close();
     form.reset();
     renderAll();
     toast(`${saved.artist} ${performanceId ? 'updated' : 'added'}`);
-  } catch (error) { errorNode.textContent = error.message; }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; errorNode.textContent = error.message; }
 }
 
 async function deletePerformance() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   if (!appState.isAdmin) return toast('Administrator access is required', true);
   const form = $('#performance-form');
   const performanceId = form.elements.performanceId.value;
@@ -565,18 +728,52 @@ async function deletePerformance() {
   const errorNode = $('.modal-error', form);
   errorNode.textContent = '';
   try {
-    const result = await RiffRosterWeb.mutations.deletePerformance(appState.activeEventId, performanceId, { method: 'DELETE' });
-    for (const day of currentEvent().days)
-      day.performances = day.performances.filter(item => item.id !== performanceId);
-    appState.data.selections = appState.data.selections.filter(selection => selection.performanceId !== performanceId);
+    const eventId = appState.activeEventId;
+    const result = await RiffRosterWeb.mutations.deletePerformance(eventId, performanceId);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
+    appState.data = RiffRosterWeb.scheduleState.deletePerformance(appState.data, eventId, result.deletedPerformanceId);
     $('#performance-modal').close();
     form.reset();
     renderAll();
     toast(`${result.deletedArtist} deleted`);
-  } catch (error) { errorNode.textContent = error.message; }
+  } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return; errorNode.textContent = error.message; }
+}
+
+let shellFeaturesPromise;
+async function loadShellFeatures() {
+  if (window.RiffRosterShell) return window.RiffRosterShell;
+  if (!shellFeaturesPromise) shellFeaturesPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script'); script.src = '/generated/shell-features.js?v=26fe03e312acc28c';
+    script.onload = () => resolve(window.RiffRosterShell);
+    script.onerror = () => { script.remove(); shellFeaturesPromise = null; reject(new Error('This view is not available offline yet. Reconnect and try again.')); };
+    document.head.append(script);
+  });
+  return shellFeaturesPromise;
+}
+async function openShellView(view) {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data) return;
+  try {
+    const shell = await loadShellFeatures();
+    if (!sessionLifecycle.isActionCurrent(action) || !appState.data) return;
+    if (view === 'profile') {
+      shell.profile($('#profile-content'), appState.username, appState.isAdmin, signOut);
+      $('#profile-modal').showModal();
+    } else {
+      $('#event-search-modal').showModal();
+      shell.eventSearch($('#event-search-content'), appState.data.events, id => {
+        $('#event-search-modal').close(); changeEvent({target:{value:id}});
+      });
+    }
+  } catch (error) { toast(error.message,true); }
 }
 
 function handleAction(action, node) {
+  if (action === 'transfer-owner') transferGroupOwner(node);
+  if (action === 'export-calendar') exportCalendar();
+  if (action === 'open-profile') openShellView('profile');
+  if (action === 'search-events') openShellView('events');
   if (action === 'toggle-pick') togglePick(node.dataset.id);
   if (action === 'toggle-attendee-names') toggleAttendeeNames(node);
   if (action === 'sign-out') signOut();
@@ -613,30 +810,48 @@ function changeView(view) {
 }
 
 function updateViewVisibility() {
+  $('#calendar-export').hidden = appState.activeView !== 'mine';
   const compare = appState.activeView === 'compare';
   $('#compare-view').hidden = !compare;
   $('#schedule-view').hidden = compare;
   $$('[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === appState.activeView));
 }
 
+function exportCalendar() {
+  if (!appState.data || !appState.activeEventId) return;
+  try {
+    const calendar = RiffRosterWeb.routeCalendar(appState.data, appState.activeEventId);
+    const url = URL.createObjectURL(new Blob([calendar.contents], {type:'text/calendar;charset=utf-8'}));
+    const link = document.createElement('a');
+    link.href = url; link.download = calendar.filename; document.body.append(link);
+    try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    toast(`Exported ${calendar.count} ${plural(calendar.count, 'pick')}${appState.offline ? ' from your offline route' : ''}.`);
+  } catch (error) { toast(error.message, true); }
+}
+
 async function changeEvent(event) {
-  appState.activeEventId = event.target.value;
-  appState.activeDayId = currentEvent()?.days[0]?.id;
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data) return;
+  Object.assign(appState, RiffRosterWeb.navigation.event(appState.data, event.target.value));
   appState.visibleStages.clear();
+  initializeCompareUsers();
   renderAll();
+  if (appState.offline) return;
   try {
     await persistLastSelectedEvent();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast(`Could not save your festival selection: ${error.message}`, true);
   }
 }
 
 async function persistLastSelectedEvent() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   if (!appState.activeEventId) return;
-  const result = await RiffRosterWeb.mutations.lastEvent(appState.activeEventId, {
-    method: 'PUT',
-    body: JSON.stringify({ eventId: appState.activeEventId })
-  });
+  const result = await RiffRosterWeb.mutations.lastEvent(appState.activeEventId);
+  if (!sessionLifecycle.isActionCurrent(action)) return;
   if (appState.data) appState.data.lastSelectedEventId = result.eventId;
 }
 
@@ -656,7 +871,7 @@ function toggleCompareUser(username) {
 }
 
 function changeGroup(event) {
-  appState.activeGroupId = event.target.value || null;
+  appState.activeGroupId = RiffRosterWeb.navigation.group(appState.data, event.target.value || null);
   persistActiveGroup();
   initializeCompareUsers();
   renderHeader();
@@ -667,39 +882,16 @@ function changeGroup(event) {
 }
 
 function initializeCompareUsers() {
-  const availableUsers = contextUsers();
-  const storedUsers = readStoredCompareUsers();
-  if (storedUsers) {
-    appState.compareUsers = new Set(availableUsers
-      .filter(user => storedUsers.some(name => sameName(name, user.username)))
-      .map(user => user.username));
-    persistCompareUsers();
-    return;
-  }
-
-  appState.compareUsers = new Set(availableUsers.map(user => user.username));
-  persistCompareUsers();
-}
-
-function compareUsersStorageKey() {
-  return `${COMPARE_USERS_KEY}.${encodeURIComponent(appState.username.toLocaleLowerCase())}.${encodeURIComponent(appState.activeGroupId || 'personal')}`;
-}
-
-function readStoredCompareUsers() {
   try {
-    const stored = localStorage.getItem(compareUsersStorageKey());
-    if (stored === null) return null;
-    const users = JSON.parse(stored);
-    return Array.isArray(users) && users.every(user => typeof user === 'string') ? users : null;
-  } catch {
-    return null;
-  }
+    appState.compareUsers = RiffRosterWeb.comparisonPreferences.restore(localStorage, appState.username, appState.activeEventId, appState.activeGroupId, contextUsers());
+  } catch { appState.compareUsers = new Set(contextUsers().map(user => user.username)); }
+  persistCompareUsers();
 }
 
 function persistCompareUsers() {
   try {
-    localStorage.setItem(compareUsersStorageKey(), JSON.stringify([...appState.compareUsers]));
-  } catch { /* Compare choices can still work for this visit when browser storage is unavailable. */ }
+    RiffRosterWeb.comparisonPreferences.save(localStorage, appState.username, appState.activeEventId, appState.activeGroupId, appState.compareUsers);
+  } catch { /* Browser storage itself may be unavailable. */ }
 }
 
 function toggleAttendeeNames(button) {
@@ -761,6 +953,19 @@ function openPerformanceModal(performanceId = null) {
   $('#performance-modal').showModal();
 }
 
+let ocrScriptPromise;
+function loadOcrEngine() {
+  if (window.Tesseract) return Promise.resolve();
+  if (!ocrScriptPromise) ocrScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = '/vendor/tesseract/tesseract.min.js';
+    script.onload = resolve;
+    script.onerror = () => { script.remove(); ocrScriptPromise = null; reject(new Error('OCR could not load. Reconnect and try again.')); };
+    document.head.append(script);
+  });
+  return ocrScriptPromise;
+}
+
 function openPosterImport() {
   if (!appState.isAdmin) return toast('Administrator access is required', true);
   const activeEvent = currentEvent();
@@ -768,6 +973,7 @@ function openPosterImport() {
   resetPosterImport();
   $('#poster-import-event-label').textContent = `Importing into ${activeEvent.name}`;
   $('#poster-import-modal').showModal();
+  loadOcrEngine().catch(error => { $('#poster-import-error').textContent = error.message; });
 }
 
 function resetPosterImport() {
@@ -834,10 +1040,7 @@ function posterFileChanged(event) {
 async function startPosterOcr() {
   const state = appState.posterImport;
   if (!state.file || state.processing) return;
-  if (!window.Tesseract) {
-    $('#poster-import-error').textContent = 'The OCR engine did not load. Refresh the page and try again.';
-    return;
-  }
+  try { await loadOcrEngine(); } catch (error) { $('#poster-import-error').textContent = error.message; return; }
 
   const runId = ++state.runId;
   state.processing = true;
@@ -1433,6 +1636,8 @@ function posterRowToPayload(row) {
 }
 
 async function importPosterRows() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const state = appState.posterImport;
   const invalidRows = state.rows.filter(row => Object.keys(validatePosterRow(row)).length);
   if (!state.rows.length || invalidRows.length) return updatePosterValidation();
@@ -1442,15 +1647,15 @@ async function importPosterRows() {
   button.disabled = true;
   button.textContent = 'Importing…';
   try {
-    const result = await RiffRosterWeb.mutations.bulk(appState.activeEventId, {
-      method: 'POST',
-      body: JSON.stringify({ performances: state.rows.map(posterRowToPayload) })
-    });
+    const result = await RiffRosterWeb.mutations.bulk(appState.activeEventId, { performances: state.rows.map(posterRowToPayload) });
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     $('#poster-import-modal').close();
     await loadApp();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     const duplicateMessage = result.skippedDuplicates ? `; ${result.skippedDuplicates} exact ${plural(result.skippedDuplicates, 'duplicate')} skipped` : '';
     toast(`${result.created.length} ${plural(result.created.length, 'act')} imported${duplicateMessage}`);
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     errorNode.textContent = error.message;
     button.disabled = false;
     button.textContent = 'Import corrected acts';
@@ -1528,7 +1733,23 @@ async function openNotificationModal() {
   await refreshNotificationState();
 }
 
-async function refreshNotificationState({ sync = false } = {}) {
+function runNotificationOperation(operation) {
+  const revision = sessionChannel?.revision();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data) return Promise.resolve();
+  return RiffRosterWeb.withPushOperation(locked => {
+    if (!sessionLifecycle.isActionCurrent(action) || !appState.data || revision !== sessionChannel?.revision()) return Promise.resolve();
+    return operation(locked);
+  });
+}
+
+function refreshNotificationState(options = {}) {
+  return runNotificationOperation(() => refreshNotificationStateUnlocked(options));
+}
+
+async function refreshNotificationStateUnlocked({ sync = false } = {}) {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const iosInstallRequired = isIosDevice() && !isStandaloneApp();
   $('#ios-install-note').hidden = !iosInstallRequired;
 
@@ -1546,6 +1767,7 @@ async function refreshNotificationState({ sync = false } = {}) {
   }
 
   const registration = await registerServiceWorker();
+  if (!sessionLifecycle.isActionCurrent(action)) return;
   if (!registration) {
     renderNotificationStatus('unavailable', 'Reminders are unavailable', 'The background service could not start on this device.');
     return;
@@ -1554,7 +1776,9 @@ async function refreshNotificationState({ sync = false } = {}) {
   let subscription;
   try {
     subscription = await registration.pushManager.getSubscription();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     console.warn('RiffRoster could not read this browser subscription.', error);
     renderNotificationStatus('unavailable', 'Reminders are unavailable', 'This browser could not access its notification subscription. Try again shortly.');
     return;
@@ -1568,7 +1792,9 @@ async function refreshNotificationState({ sync = false } = {}) {
   if (sync && appState.data) {
     try {
       await persistPushSubscription(subscription);
+      if (!sessionLifecycle.isActionCurrent(action)) return;
     } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
       console.warn('RiffRoster could not refresh this push subscription.', error);
     }
   }
@@ -1589,6 +1815,9 @@ function renderNotificationStatus(status, title, detail) {
 }
 
 async function enableNotifications() {
+  const revision = sessionChannel?.revision();
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const errorNode = $('#notification-error');
   errorNode.textContent = '';
   if (!supportsPushNotifications()) return refreshNotificationState();
@@ -1596,91 +1825,117 @@ async function enableNotifications() {
 
   try {
     const permission = await Notification.requestPermission();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     if (permission !== 'granted') {
       await refreshNotificationState();
+      if (!sessionLifecycle.isActionCurrent(action)) return;
       return;
     }
 
-    const registration = await registerServiceWorker();
-    if (!registration) throw new Error('The background service could not start.');
-    const keyResponse = await RiffRosterWeb.sessionPush.publicKey();
-    const existing = await registration.pushManager.getSubscription();
-    const subscription = existing || await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(keyResponse.publicKey)
+    await RiffRosterWeb.withPushOperation(async locked => {
+      if (!sessionLifecycle.isActionCurrent(action) || revision !== sessionChannel?.revision()) return;
+      const registration = await registerServiceWorker();
+      if (!sessionLifecycle.isActionCurrent(action)) return;
+      if (!registration) throw new Error('The background service could not start.');
+      const keyResponse = await RiffRosterWeb.sessionPush.publicKey();
+      if (!sessionLifecycle.isActionCurrent(action)) return;
+      const subscription = await RiffRosterWeb.acquirePushSubscription(registration.pushManager, {
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyResponse.publicKey)
+      }, () => sessionLifecycle.isActionCurrent(action), locked);
+      if (!subscription || !sessionLifecycle.isActionCurrent(action)) return;
+      saveNotificationPreferences();
+      await persistPushSubscription(subscription);
+      if (!sessionLifecycle.isActionCurrent(action)) return;
+      appState.pushSubscription = subscription;
+      await refreshNotificationStateUnlocked();
+      if (!sessionLifecycle.isActionCurrent(action)) return;
+      toast('Concert reminders enabled');
     });
-    saveNotificationPreferences();
-    await persistPushSubscription(subscription);
-    appState.pushSubscription = subscription;
-    await refreshNotificationState();
-    toast('Concert reminders enabled');
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     errorNode.textContent = error.message;
   }
 }
 
 async function persistPushSubscription(subscription) {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const serialized = subscription.toJSON();
   if (!serialized.keys?.p256dh || !serialized.keys?.auth)
     throw new Error('The browser did not provide notification encryption keys.');
-  return RiffRosterWeb.sessionPush.subscribe({
-    method: 'POST',
-    body: JSON.stringify({
-      endpoint: subscription.endpoint,
-      keys: serialized.keys,
-      ...notificationPreferences()
-    })
-  });
+  return RiffRosterWeb.sessionPush.subscribe({ endpoint: subscription.endpoint, keys: serialized.keys, ...notificationPreferences() });
 }
 
-async function notificationPreferenceChanged() {
+function notificationPreferenceChanged() {
+  return runNotificationOperation(() => notificationPreferenceChangedUnlocked());
+}
+
+async function notificationPreferenceChangedUnlocked() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   saveNotificationPreferences();
   if (!appState.pushSubscription) return;
   try {
     await persistPushSubscription(appState.pushSubscription);
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     renderNotificationStatus('on', 'On for this device', `${notificationPreferences().leadMinutes} minutes before each selected act.`);
     toast('Reminder preferences saved');
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     $('#notification-error').textContent = error.message;
   }
 }
 
-async function disableNotifications() {
+function disableNotifications() {
+  return runNotificationOperation(() => disableNotificationsUnlocked());
+}
+
+async function disableNotificationsUnlocked() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   const subscription = appState.pushSubscription;
-  if (!subscription) return refreshNotificationState();
+  if (!subscription) return refreshNotificationStateUnlocked();
   $('#notification-error').textContent = '';
   try {
-    await RiffRosterWeb.sessionPush.unsubscribe({
-      method: 'DELETE',
-      body: JSON.stringify({ endpoint: subscription.endpoint })
-    });
+    await RiffRosterWeb.sessionPush.unsubscribe({ endpoint: subscription.endpoint });
+    if (!sessionLifecycle.isActionCurrent(action)) return;
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     console.warn('RiffRoster could not remove the server-side push subscription.', error);
   }
 
   try {
     await subscription.unsubscribe();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     appState.pushSubscription = null;
-    await refreshNotificationState();
+    await refreshNotificationStateUnlocked();
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast('Concert reminders turned off');
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     $('#notification-error').textContent = 'This browser could not turn notifications off. Try again.';
     console.warn('RiffRoster could not unsubscribe this browser.', error);
   }
 }
 
-async function sendTestNotification() {
+function sendTestNotification() {
+  return runNotificationOperation(() => sendTestNotificationUnlocked());
+}
+
+async function sendTestNotificationUnlocked() {
+  const action = sessionLifecycle.beginAction();
+  if (action === null || !appState.data || appState.offline) return;
   if (!appState.pushSubscription) return;
   $('#notification-error').textContent = '';
   try {
-    await RiffRosterWeb.sessionPush.test({
-      method: 'POST',
-      body: JSON.stringify({ endpoint: appState.pushSubscription.endpoint })
-    });
+    await RiffRosterWeb.sessionPush.test({ endpoint: appState.pushSubscription.endpoint });
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     toast('Test notification sent');
   } catch (error) {
+    if (!sessionLifecycle.isActionCurrent(action)) return;
     $('#notification-error').textContent = error.message;
-    if (error.status === 410) await refreshNotificationState();
+    if (error.status === 410) await refreshNotificationStateUnlocked();
   }
 }
 
@@ -1701,6 +1956,7 @@ function focusPerformanceFromNotification() {
       appState.activeDayId = day.id;
       appState.activeView = 'schedule';
       appState.visibleStages.clear();
+      initializeCompareUsers();
       renderAll();
       window.history.replaceState({}, '', window.location.pathname);
       window.requestAnimationFrame(() => {
@@ -1720,10 +1976,7 @@ function eventById(id) { return appState.data?.events.find(event => event.id ===
 function currentDay() { return currentEvent()?.days.find(day => day.id === appState.activeDayId); }
 function activeGroup() { return appState.data?.groups?.find(group => group.id === appState.activeGroupId) || null; }
 function contextUsers() {
-  const group = activeGroup();
-  if (group) return group.members;
-  const me = userByName(appState.username);
-  return me ? [me] : [];
+  return RiffRosterWeb.navigation.contextUsers(appState.data, appState.username, appState.activeGroupId);
 }
 function performanceById(id) { return currentEvent()?.days.flatMap(day => day.performances).find(performance => performance.id === id); }
 function userByName(name) { return appState.data?.users.find(user => sameName(user.username, name)); }
@@ -1739,14 +1992,6 @@ function usersForPerformance(id) {
 function stagesForEvent() { return [...new Set((currentEvent()?.days || []).flatMap(day => day.performances.map(performance => performance.stage)))]; }
 function sameName(a, b) { return a?.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0; }
 function byStart(a, b) { return new Date(a.startsAt) - new Date(b.startsAt); }
-
-function scheduleDateForPerformance(performance) {
-  const date = performance.startsAt.slice(0, 10);
-  if (Number(performance.startsAt.slice(11, 13)) >= 6) return date;
-  const previousDay = new Date(`${date}T12:00:00`);
-  previousDay.setDate(previousDay.getDate() - 1);
-  return localDateString(previousDay);
-}
 
 function findConflicts(performances) {
   const sorted = [...performances].sort(byStart);
@@ -1817,7 +2062,7 @@ function restoreActiveGroup() {
   let stored = null;
   try { stored = localStorage.getItem(activeGroupStorageKey()); } catch { /* Personal mode remains available. */ }
   const preferred = appState.activeGroupId || stored;
-  appState.activeGroupId = appState.data?.groups?.some(group => group.id === preferred) ? preferred : null;
+  appState.activeGroupId = RiffRosterWeb.navigation.group(appState.data, preferred);
   persistActiveGroup();
 }
 
@@ -1829,19 +2074,45 @@ function persistActiveGroup() {
 }
 
 async function signOut() {
-  try {
-    await disconnectPushForSignOut();
-    await RiffRosterWeb.sessionPush.signOut();
-  } catch (error) {
-    if (error.status !== 401) toast(error.message, true);
-  } finally {
-    appState.data = null;
-    appState.isAdmin = false;
-    $('#account-password').value = '';
-    $('#access-code').value = '';
-    showLogin();
-    $('#account-password').focus();
-  }
+  const authentication = sessionLifecycle.beginAuthentication();
+  if (authentication === null) return;
+  return RiffRosterWeb.withPushOperation(async () => {
+    if (!sessionLifecycle.isAuthenticationCurrent(authentication)) return;
+    try {
+      await disconnectPushForSignOut();
+      if (!sessionLifecycle.isAuthenticationCurrent(authentication)) return;
+      await RiffRosterWeb.sessionPush.signOut();
+    } catch (error) {
+      if (error.status !== 401) toast(error.message, true);
+    } finally {
+      if (sessionLifecycle.isAuthenticationCurrent(authentication)) {
+        sessionLifecycle.finishAuthentication(authentication);
+        clearSessionView();
+        sessionChannel?.changed();
+      }
+    }
+  });
+}
+
+function clearSessionView() {
+  appState.cacheAvailable = false;
+  appState.data = null;
+  appState.offline = false;
+  RiffRosterWeb.offline.clear().catch(() => {});
+  $('#sync-status').hidden = true; $('#sync-retry').hidden = true;
+  appState.isAdmin = false;
+  appState.activeEventId = null;
+  appState.activeDayId = null;
+  appState.activeGroupId = null;
+  appState.compareUsers.clear();
+  appState.visibleStages.clear();
+  appState.pushSubscription = null;
+  $$('dialog[open]').forEach(dialog => dialog.close());
+  $('#account-password').value = '';
+  $('#access-code').value = '';
+  $('#notification-indicator').classList.remove('active');
+  showLogin();
+  $('#account-password').focus();
 }
 
 async function disconnectPushForSignOut() {
@@ -1850,10 +2121,7 @@ async function disconnectPushForSignOut() {
     const subscription = appState.pushSubscription || await registration?.pushManager.getSubscription();
     if (!subscription) return;
     try {
-      await RiffRosterWeb.sessionPush.unsubscribe({
-        method: 'DELETE',
-        body: JSON.stringify({ endpoint: subscription.endpoint })
-      });
+      await RiffRosterWeb.sessionPush.unsubscribe({ endpoint: subscription.endpoint });
     } catch { /* Signing out must still succeed if the server is temporarily unavailable. */ }
     await subscription.unsubscribe();
     appState.pushSubscription = null;

@@ -1,4 +1,6 @@
-import { ApiError, requestJson } from './api';
+import { requestBodies, requestId, type EventRequest, type PerformanceRequest } from './requests';
+import { ApiError } from './api';
+import { generatedApi } from './generated/client';
 import { object, string, boolean, user, decodeEvent, decodePerformance, type Group } from './state';
 
 export class MutationResponseError extends Error {
@@ -17,6 +19,13 @@ function group(value: unknown): Group {
   return { id: string(row.id), name: string(row.name), createdBy: string(row.createdBy), isOwner: boolean(row.isOwner), members };
 }
 export const mutationDecoders = {
+  transferOwner(value: unknown, id: string, username: string) {
+    const result = group(object(value).group);
+    matching(result.id, id);
+    check(result.createdBy.toLowerCase() === username.toLowerCase());
+    check(result.members.some(member => member.username.toLowerCase() === result.createdBy.toLowerCase()));
+    return {group:result};
+  },
   toggle(value: unknown, id: string) {
     const row = object(value);
     return { selected: boolean(row.selected), performanceId: matching(row.performanceId, id), username: string(row.username) };
@@ -46,27 +55,28 @@ export const mutationDecoders = {
   groupCode(value: unknown, id: string) { const row = object(value); return { groupId: matching(row.groupId, id), joinCode: string(row.joinCode) }; },
   lastEvent(value: unknown, id: string) { return { eventId: matching(object(value).eventId, id) }; }
 };
-async function mutate<T>(url: string, options: RequestInit, decode: (value: unknown) => T): Promise<T> {
+async function mutate<T>(send: () => Promise<unknown>, decode: (value: unknown) => T): Promise<T> {
   let value: unknown;
-  try { value = await requestJson(url, options); } catch (error) {
+  try { value = await send(); } catch (error) {
     if (error instanceof ApiError && error.status >= 200 && error.status < 300) throw new MutationResponseError();
     throw error;
   }
   // Never retry mutations automatically: a malformed response can follow a committed write.
   try { return decode(value); } catch { throw new MutationResponseError(); }
 }
-const eventPath = (id: string) => `/api/events/${encodeURIComponent(id)}`;
-const groupPath = (id: string) => `/api/groups/${encodeURIComponent(id)}`;
 export const mutations = {
-  toggle: (id: string, options: RequestInit) => mutate('/api/selections/toggle', options, value => mutationDecoders.toggle(value, id)),
-  createEvent: (options: RequestInit) => mutate('/api/events', options, mutationDecoders.createEvent),
-  deleteEvent: (id: string, options: RequestInit) => mutate(eventPath(id), options, value => mutationDecoders.deleteEvent(value, id)),
-  savePerformance: (eventId: string, id: string | null, options: RequestInit) => mutate(`${eventPath(eventId)}/performances${id === null ? '' : `/${encodeURIComponent(id)}`}`, options, value => mutationDecoders.savePerformance(value, id)),
-  deletePerformance: (eventId: string, id: string, options: RequestInit) => mutate(`${eventPath(eventId)}/performances/${encodeURIComponent(id)}`, options, value => mutationDecoders.deletePerformance(value, id)),
-  bulk: (id: string, options: RequestInit) => mutate(`${eventPath(id)}/performances/bulk`, options, mutationDecoders.bulk),
-  createGroup: (options: RequestInit) => mutate('/api/groups', options, mutationDecoders.createGroup),
-  joinGroup: (options: RequestInit) => mutate('/api/groups/join', options, mutationDecoders.joinGroup),
-  leaveGroup: (id: string, options: RequestInit) => mutate(`${groupPath(id)}/leave`, options, value => mutationDecoders.leaveGroup(value, id)),
-  groupCode: (id: string, options: RequestInit) => mutate(`${groupPath(id)}/join-code`, options, value => mutationDecoders.groupCode(value, id)),
-  lastEvent: (id: string, options: RequestInit) => mutate('/api/account/last-event', options, value => mutationDecoders.lastEvent(value, id))
+  transferOwner: async (id: string, username: string) => mutate(() => generatedApi.putGroupsGroupIdOwner(requestId(id), {username:requestId(username)}), value => mutationDecoders.transferOwner(value,id,username)),
+  toggle: async (id: string) => mutate(() => generatedApi.postSelectionsToggle({performanceId:requestId(id)}), value => mutationDecoders.toggle(value, id)),
+  createEvent: async (body: EventRequest) => mutate(() => generatedApi.postEvents(requestBodies.event(body)), mutationDecoders.createEvent),
+  deleteEvent: async (id: string) => mutate(() => generatedApi.deleteEventsEventId(requestId(id)), value => mutationDecoders.deleteEvent(value, id)),
+  savePerformance: async (eventId: string, id: string | null, body: PerformanceRequest) => mutate(() => id === null
+    ? generatedApi.postEventsEventIdPerformances(requestId(eventId),requestBodies.performance(body))
+    : generatedApi.putEventsEventIdPerformancesPerformanceId(requestId(eventId),requestId(id),requestBodies.performance(body)), value => mutationDecoders.savePerformance(value, id)),
+  deletePerformance: async (eventId: string, id: string) => mutate(() => generatedApi.deleteEventsEventIdPerformancesPerformanceId(requestId(eventId),requestId(id)), value => mutationDecoders.deletePerformance(value, id)),
+  bulk: async (id: string, body: { performances: PerformanceRequest[] }) => mutate(() => generatedApi.postEventsEventIdPerformancesBulk(requestId(id),requestBodies.bulk(body)), mutationDecoders.bulk),
+  createGroup: async (body: { name: string }) => mutate(() => generatedApi.postGroups(requestBodies.group(body)), mutationDecoders.createGroup),
+  joinGroup: async (body: { joinCode: string }) => mutate(() => generatedApi.postGroupsJoin(requestBodies.join(body)), mutationDecoders.joinGroup),
+  leaveGroup: async (id: string) => mutate(() => generatedApi.postGroupsGroupIdLeave(requestId(id)), value => mutationDecoders.leaveGroup(value, id)),
+  groupCode: async (id: string) => mutate(() => generatedApi.postGroupsGroupIdJoinCode(requestId(id)), value => mutationDecoders.groupCode(value, id)),
+  lastEvent: async (id: string) => mutate(() => generatedApi.putAccountLastEvent({eventId:requestId(id)}), value => mutationDecoders.lastEvent(value, id))
 };

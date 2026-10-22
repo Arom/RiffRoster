@@ -1,10 +1,11 @@
-const CACHE_NAME = 'riffroster-shell-22ba8bfbc19ec201';
+const CACHE_NAME = 'riffroster-shell-d146494562546efb';
 const APP_SHELL = [
   '/',
-  '/styles.css?v=3ce54e5d05d24016',
-  '/app.js?v=3ce325b118cea68e',
-  '/generated/riffroster-web.js?v=be827598659c5d0a',
+  '/styles.css?v=e239843c671c521a',
+  '/app.js?v=c5293098af9167ce',
+  '/generated/riffroster-web.js?v=00374931ca69587a',
   '/manifest.webmanifest',
+  '/generated/shell-features.js?v=26fe03e312acc28c',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/badge-96.png'

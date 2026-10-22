@@ -6,6 +6,10 @@ RUN pnpm install --frozen-lockfile
 COPY src/RiffRoster.Web/ src/RiffRoster.Web/
 COPY wwwroot/ wwwroot/
 COPY tools/stamp-web-cache.mjs tools/stamp-web-cache.mjs
+COPY tools/generate-api-client.mjs tools/generate-api-client.mjs
+COPY src/RiffRoster.Domain/Accounts/Contracts.cs src/RiffRoster.Domain/Accounts/Contracts.cs
+COPY src/RiffRoster.Domain/Notifications/Contracts.cs src/RiffRoster.Domain/Notifications/Contracts.cs
+COPY src/RiffRoster.Api/Endpoints/ src/RiffRoster.Api/Endpoints/
 RUN pnpm build:web
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
@@ -21,6 +25,7 @@ COPY . .
 COPY --from=frontend /src/wwwroot/generated/ wwwroot/generated/
 COPY --from=frontend /src/wwwroot/service-worker.js wwwroot/service-worker.js
 COPY --from=frontend /src/wwwroot/index.html wwwroot/index.html
+COPY --from=frontend /src/wwwroot/app.js wwwroot/app.js
 RUN dotnet publish RiffRoster.csproj \
     --configuration Release \
     --output /app/publish \

@@ -46,7 +46,7 @@ function Schedule({ model }: { model: Model }) {
   const { timeline, lanes } = model;
   const style: Variables = { minWidth: 68 + lanes.length * 240, '--lane-count': lanes.length, '--timeline-height': `${timeline.height}px`, '--timeline-half-hour': `${timeline.halfHourOffset}px` };
   return <><div className="timeline-swipe-hint">Swipe sideways to compare stages <span aria-hidden="true">↔</span></div>
-    <div className="schedule-timeline"><div className="timeline-shell" style={style}>
+    <div className="schedule-timeline" tabIndex={0} role="region" aria-label="Schedule timeline. Use arrow keys to scroll between stages."><div className="timeline-shell" style={style}>
       <div className="timeline-header"><div className="timeline-corner">TIME</div><div className="timeline-stage-headings">
         {lanes.map(lane => <header key={lane.stage} className="timeline-stage-heading" style={{ '--stage-color': lane.color } as Variables}><h3>{lane.stage}</h3><span>{lane.cards.length} {lane.cards.length === 1 ? 'act' : 'acts'}</span></header>)}
       </div></div>

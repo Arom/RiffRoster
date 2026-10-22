@@ -24,6 +24,16 @@ public static class SelectionsEndpoints
                 : Results.Ok(result);
         }).RequireAuthorization();
 
+        api.MapPut("/selections/{performanceId}", (string performanceId, SetSelectionRequest request, HttpContext context, DataStore store) =>
+        {
+            if (request.Selected is null) return Results.BadRequest(new { message = "An explicit selection state is required." });
+            if (request.MutationId is { Length: > 128 }) return Results.BadRequest(new { message = "The mutation identifier is too long." });
+            var result = store.SetSelection(context.User.Identity!.Name!, performanceId, request.Selected.Value, request.MutationId);
+            return result is null
+                ? Results.NotFound(new { message = "That performance no longer exists." })
+                : Results.Ok(result);
+        }).RequireAuthorization();
+
         api.MapPut("/account/last-event", (SetLastSelectedEventRequest request, HttpContext context, DataStore store) =>
         {
             if (string.IsNullOrWhiteSpace(request.EventId))

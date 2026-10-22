@@ -1,3 +1,4 @@
+import { requestBodies, jsonRequest, type SignInRequest, type SubscriptionRequest } from './requests';
 import { ApiError, requestJson } from './api';
 import { object, string, boolean, user } from './state';
 import { MutationResponseError } from './mutations';
@@ -44,10 +45,10 @@ async function noContent(url: string, options: RequestInit): Promise<void> {
   throw new ApiError(`Request failed (${response.status})`, response.status);
 }
 export const sessionPush = {
-  signIn: (options: RequestInit) => validated('/api/session', options, sessionPushDecoders.session),
+  signIn: async (body: SignInRequest) => validated('/api/session', jsonRequest('POST', requestBodies.signIn(body)), sessionPushDecoders.session),
   signOut: () => noContent('/api/session/logout', { method: 'POST' }),
   publicKey: () => validated('/api/push/public-key', {}, sessionPushDecoders.publicKey, false),
-  subscribe: (options: RequestInit) => validated('/api/push/subscriptions', options, sessionPushDecoders.subscription),
-  unsubscribe: (options: RequestInit) => noContent('/api/push/subscriptions', options),
-  test: (options: RequestInit) => validated('/api/push/test', options, sessionPushDecoders.test)
+  subscribe: async (body: SubscriptionRequest) => validated('/api/push/subscriptions', jsonRequest('POST', requestBodies.subscription(body)), sessionPushDecoders.subscription),
+  unsubscribe: async (body: { endpoint: string }) => noContent('/api/push/subscriptions', jsonRequest('DELETE', requestBodies.endpoint(body))),
+  test: async (body: { endpoint: string }) => validated('/api/push/test', jsonRequest('POST', requestBodies.endpoint(body)), sessionPushDecoders.test)
 };

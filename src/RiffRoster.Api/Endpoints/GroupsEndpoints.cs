@@ -13,6 +13,14 @@ public static class GroupsEndpoints
 {
     public static void MapGroups(this RouteGroupBuilder api)
     {
+        api.MapPut("/groups/{groupId}/owner", (string groupId, TransferGroupOwnerRequest request, HttpContext context, DataStore store) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Username))
+                return Results.BadRequest(new { message = "Choose a current group member." });
+            var result = store.TransferGroupOwner(context.User.Identity!.Name!, groupId, request.Username);
+            return result is null ? Results.Forbid() : Results.Ok(result);
+        }).RequireAuthorization().RequireRateLimiting("account-actions");
+
         api.MapPost("/groups", (CreateGroupRequest request, HttpContext context, DataStore store) =>
         {
             var name = request.Name?.Trim();

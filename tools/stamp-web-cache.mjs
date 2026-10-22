@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const assets = ['styles.css', 'app.js', 'generated/riffroster-web.js'];
+const controllerPath = resolve(root,'wwwroot/app.js');
+const shellVersion = createHash('sha256').update(readFileSync(resolve(root,'wwwroot/generated/shell-features.js'))).digest('hex').slice(0,16);
+const controller = readFileSync(controllerPath,'utf8');
+const stampedController = controller.replace(/\/generated\/shell-features\.js(?:\?v=[a-f0-9]+)?/g, `/generated/shell-features.js?v=${shellVersion}`);
+if (controller !== stampedController) writeFileSync(controllerPath,stampedController);
+const assets = ['styles.css', 'app.js', 'generated/riffroster-web.js', 'generated/shell-features.js'];
 const indexPath = resolve(root, 'wwwroot/index.html');
 const indexSource = readFileSync(indexPath, 'utf8');
 let index = indexSource;

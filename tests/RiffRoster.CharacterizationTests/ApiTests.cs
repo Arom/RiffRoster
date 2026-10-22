@@ -8,6 +8,61 @@ namespace RiffRoster.CharacterizationTests;
 public sealed class ApiTests
 {
     [Fact]
+    public async Task Only_current_owner_can_transfer_to_a_member_and_rights_move_immediately()
+    {
+        using var app = new TestApp();
+        using var owner = await app.Login("Owner");
+        using var member = await app.Login("Member");
+        using var outsider = await app.Login("Outsider", admin: true);
+        var created = TestApp.Element(app.Store.CreateGroup("Owner", "Transfer crew"));
+        var id = created.GetProperty("group").GetProperty("id").GetString();
+        app.Store.JoinGroup("Member", created.GetProperty("joinCode").GetString()!);
+        var url = $"/api/groups/{id}/owner";
+        using var anonymous = app.Client();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PutAsJsonAsync(url, new { username = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.PutAsJsonAsync(url, new { username = "Member" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await outsider.PutAsJsonAsync(url, new { username = "Outsider" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await owner.PutAsJsonAsync(url, new { username = "Outsider" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await owner.PutAsJsonAsync(url, new { username = "" })).StatusCode);
+        var result = await owner.PutAsJsonAsync(url, new { username = "member" });
+        result.EnsureSuccessStatusCode();
+        var group = (await result.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("group");
+        Assert.Equal("Member", group.GetProperty("createdBy").GetString());
+        Assert.False(group.GetProperty("isOwner").GetBoolean());
+        Assert.Equal(2, group.GetProperty("members").GetArrayLength());
+        Assert.Equal("Member", Assert.Single(app.ReadState().Groups).CreatedBy);
+        Assert.Equal(HttpStatusCode.Forbidden, (await owner.PostAsync($"/api/groups/{id}/join-code", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await member.PostAsync($"/api/groups/{id}/join-code", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await owner.PutAsJsonAsync(url, new { username = "Owner" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Explicit_selection_replay_is_idempotent_and_requires_authentication_and_state()
+    {
+        using var app = new TestApp();
+        using var anonymous = app.Client();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PutAsJsonAsync("/api/selections/missing", new { selected = true })).StatusCode);
+        using var client = await app.Login();
+        var state = await client.GetFromJsonAsync<JsonElement>("/api/state");
+        var id = state.GetProperty("events")[0].GetProperty("days")[0].GetProperty("performances")[0].GetProperty("id").GetString();
+        var eventId = state.GetProperty("events")[0].GetProperty("id").GetString()!;
+        var version = state.GetProperty("eventVersions").GetProperty(eventId).GetString();
+        foreach (var selected in new[] { true, true, false, false })
+        {
+            var response = await client.PutAsJsonAsync($"/api/selections/{id}", new { selected, username = "Other", mutationId = "replayed-intent" });
+            response.EnsureSuccessStatusCode();
+            var result = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(selected, result.GetProperty("selected").GetBoolean());
+            Assert.Equal("Alice", result.GetProperty("username").GetString());
+            Assert.Equal("replayed-intent", result.GetProperty("mutationId").GetString());
+            Assert.Equal(version, result.GetProperty("eventVersion").GetString());
+            Assert.Equal(selected ? 1 : 0, app.ReadState().Selections.Count);
+        }
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync($"/api/selections/{id}", new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PutAsJsonAsync("/api/selections/missing", new { selected = true })).StatusCode);
+    }
+
+    [Fact]
     public async Task Anonymous_state_is_denied_while_health_and_shell_are_public()
     {
         using var app = new TestApp();

@@ -1,0 +1,60 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const {readFileSync} = require('node:fs');
+const path = require('node:path');
+const c = vm.createContext({console});
+vm.runInContext(readFileSync(path.join(__dirname, '../../wwwroot/generated/riffroster-web.js'), 'utf8'), c);
+const create = c.RiffRosterWeb.createSessionLifecycle;
+test('external invalidation blocks old authentication completions as well as actions and reads', () => {
+  const lifecycle = create();
+  const action = lifecycle.beginAction();
+  const read = lifecycle.beginRead();
+  const auth = lifecycle.beginAuthentication();
+  lifecycle.invalidate();
+  assert.equal(lifecycle.isAuthenticationCurrent(auth),false);
+  assert.equal(lifecycle.isActionCurrent(action),false);
+  assert.equal(lifecycle.isCurrent(read),false);
+  assert.notEqual(lifecycle.beginAuthentication(),null);
+});
+test('action tokens survive ordinary reads but never an authentication transition', () => {
+  const lifecycle = create();
+  const action = lifecycle.beginAction();
+  lifecycle.beginRead();
+  lifecycle.beginRead();
+  assert.equal(lifecycle.isActionCurrent(action),true);
+  const auth = lifecycle.beginAuthentication();
+  assert.equal(lifecycle.beginAction(),null);
+  assert.equal(lifecycle.isActionCurrent(action),false);
+  lifecycle.finishAuthentication(auth);
+  assert.equal(lifecycle.isActionCurrent(action),false);
+  assert.equal(lifecycle.isActionCurrent(lifecycle.beginAction()),true);
+});
+test('only the newest snapshot may apply either success or failure', () => {
+  const lifecycle = create();
+  const old = lifecycle.beginRead();
+  const latest = lifecycle.beginRead();
+  assert.equal(lifecycle.isCurrent(old),false);
+  assert.equal(lifecycle.isCurrent(latest),true);
+});
+test('authentication invalidates old reads permanently and blocks reads while pending', () => {
+  const lifecycle = create();
+  const old = lifecycle.beginRead();
+  const auth = lifecycle.beginAuthentication();
+  assert.equal(lifecycle.beginRead(),null);
+  assert.equal(lifecycle.isCurrent(old),false);
+  lifecycle.finishAuthentication(auth);
+  assert.equal(lifecycle.isCurrent(old),false);
+  assert.equal(lifecycle.isCurrent(lifecycle.beginRead()),true);
+});
+test('cookie-changing operations are exclusive and an old completion cannot unlock a newer one', () => {
+  const lifecycle = create();
+  const first = lifecycle.beginAuthentication();
+  assert.equal(lifecycle.beginAuthentication(),null);
+  lifecycle.finishAuthentication(first);
+  const second = lifecycle.beginAuthentication();
+  lifecycle.finishAuthentication(first);
+  assert.equal(lifecycle.beginRead(),null);
+  lifecycle.finishAuthentication(second);
+  assert.notEqual(lifecycle.beginRead(),null);
+});

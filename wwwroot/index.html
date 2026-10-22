@@ -8,9 +8,11 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=3ce54e5d05d24016">
+  <link rel="stylesheet" href="/styles.css?v=e239843c671c521a">
 </head>
 <body>
+  <div id="sync-status" role="status" aria-live="polite" hidden></div>
+  <button id="sync-retry" class="text-button" type="button" hidden>Retry sync</button>
   <section class="login-screen" id="login-screen">
     <div class="login-noise" aria-hidden="true"></div>
     <div class="login-brand">
@@ -68,7 +70,7 @@
         </button>
         <div class="crew-stack" id="crew-stack" aria-label="People in this clashfinder"></div>
         <span class="admin-badge" id="admin-badge" hidden>ADMIN</span>
-        <button class="profile-button" id="profile-button" data-action="sign-out" title="Sign out"></button>
+        <button class="profile-button" id="profile-button" data-action="open-profile" title="Sign out"></button>
       </div>
     </header>
 
@@ -77,6 +79,7 @@
         <div class="event-select-wrap">
           <span class="eyebrow">RUNNING ORDER</span>
           <select id="event-select" aria-label="Choose running order"></select>
+          <button class="text-button" type="button" data-action="search-events">Find an event</button>
         </div>
         <div class="event-meta" id="event-meta"></div>
         <button class="button button--ghost button--compact" data-action="open-event-modal" data-admin-only title="New running order" aria-label="New running order">
@@ -135,6 +138,10 @@
         </div>
         <div class="stage-filters" id="stage-filters"></div>
         <div class="schedule-summary" id="schedule-summary"></div>
+        <div id="calendar-export" hidden>
+          <button class="button button--ghost" type="button" data-action="export-calendar">Export my route (.ics)</button>
+          <p class="field-hint">All your picks in this festival, across every day. Downloads a snapshot; calendar entries will not update automatically.</p>
+        </div>
         <div class="schedule-grid" id="schedule-grid" role="tabpanel" aria-label="Selected festival day schedule" tabindex="0"></div>
       </section>
 
@@ -203,7 +210,7 @@
 
   <dialog id="delete-event-modal">
     <form class="modal-card" id="delete-event-form">
-      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">Ă—</button>
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">&times;</button>
       <span class="eyebrow eyebrow--danger">ADMIN FESTIVAL MANAGEMENT</span>
       <h2>Delete <span id="delete-event-name">this festival</span>?</h2>
       <p>This permanently removes the running order, every act, and everyoneâ€™s picks for this festival. Accounts and groups are not affected.</p>
@@ -302,6 +309,14 @@
     </section>
   </dialog>
 
+  <dialog id="profile-modal" aria-labelledby="profile-title">
+    <button class="modal-close" type="button" data-action="close-modal" aria-label="Close profile">x</button>
+    <div id="profile-content" class="shell-dialog"></div>
+  </dialog>
+  <dialog id="event-search-modal" aria-labelledby="event-search-title">
+    <button class="modal-close" type="button" data-action="close-modal" aria-label="Close event search">x</button>
+    <div id="event-search-content" class="shell-dialog"></div>
+  </dialog>
   <dialog id="notification-modal">
     <section class="modal-card notification-card" aria-labelledby="notification-heading">
       <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">×</button>
@@ -345,7 +360,7 @@
 
   <dialog id="groups-modal" class="groups-dialog">
     <section class="modal-card groups-card" aria-labelledby="groups-heading">
-      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">Ă—</button>
+      <button class="modal-close" type="button" data-action="close-modal" aria-label="Close">&times;</button>
       <span class="eyebrow">YOUR CREWS</span>
       <h2 id="groups-heading">Meet in the middle.</h2>
       <p>Create a group and share its private join code, or enter a code from a friend. Your account starts in personal mode.</p>
@@ -377,8 +392,7 @@
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/vendor/tesseract/tesseract.min.js" defer></script>
-  <script src="/generated/riffroster-web.js?v=be827598659c5d0a" defer></script>
-  <script src="/app.js?v=3ce325b118cea68e" defer></script>
+  <script src="/generated/riffroster-web.js?v=00374931ca69587a" defer></script>
+  <script src="/app.js?v=c5293098af9167ce" defer></script>
 </body>
 </html>

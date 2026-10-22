@@ -1,4 +1,4 @@
-import { requestJson } from './api';
+import { generatedApi } from './generated/client';
 
 export interface Performance { id: string; artist: string; stage: string; startsAt: string; endsAt: string }
 export interface FestivalDay { id: string; date: string; label: string; performances: Performance[] }
@@ -9,6 +9,7 @@ export interface Group { id: string; name: string; createdBy: string; isOwner: b
 export interface StateSnapshot {
   currentUser: string; isAdmin: boolean; lastSelectedEventId: string | null;
   events: FestivalEvent[]; users: PublicUser[]; selections: Selection[]; groups: Group[];
+  eventVersions?: Record<string, string>;
 }
 
 export class StateValidationError extends Error {
@@ -90,7 +91,16 @@ export function decodeState(value: unknown): StateSnapshot {
   });
   unique(groups.map(group => group.id));
   // A stale preferred event is tolerated: the existing controller chooses the first available event.
-  return { currentUser, isAdmin, lastSelectedEventId, events, users, selections, groups };
+  const result: StateSnapshot = { currentUser, isAdmin, lastSelectedEventId, events, users, selections, groups };
+  if (row.eventVersions !== undefined) {
+    const versions = object(row.eventVersions);
+    result.eventVersions = Object.fromEntries(events.map(event => {
+      const version = string(versions[event.id]);
+      requireValid(/^[A-F0-9]{64}$/.test(version));
+      return [event.id, version];
+    }));
+  }
+  return result;
 }
 
-export async function fetchState(): Promise<StateSnapshot> { return decodeState(await requestJson('/api/state')); }
+export async function fetchState(): Promise<StateSnapshot> { return decodeState(await generatedApi.getState()); }

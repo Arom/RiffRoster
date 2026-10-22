@@ -23,6 +23,22 @@ public sealed class PostgresTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Theory]
+    [InlineData("store-v7.json")]
+    public async Task Owner_transfer_survives_restart_and_updates_authorization(string fixture)
+    {
+        var connection = await Imported(fixture);
+        var state = Source(fixture).State;
+        var group = state.Groups.First();
+        var next = state.GroupMemberships.First(member => member.GroupId == group.Id && member.Username != group.CreatedBy).Username;
+        var store = new DataStore(new PostgresStatePersistence(connection));
+        Assert.Null(store.TransferGroupOwner(next, group.Id, next));
+        Assert.NotNull(store.TransferGroupOwner(group.CreatedBy, group.Id, next));
+        var restarted = new DataStore(new PostgresStatePersistence(connection));
+        Assert.Null(restarted.RegenerateJoinCode(group.CreatedBy, group.Id));
+        Assert.NotNull(restarted.RegenerateJoinCode(next, group.Id));
+    }
+
+    [Theory]
     [InlineData("store-v5.json")]
     [InlineData("store-v7.json")]
     public async Task Migration_import_comparison_and_repeat_preserve_all_content(string fixture)
